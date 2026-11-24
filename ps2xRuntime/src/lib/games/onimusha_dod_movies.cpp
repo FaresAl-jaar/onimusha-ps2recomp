@@ -27,6 +27,7 @@
 #include <deque>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -662,8 +663,41 @@ namespace
     }
 #endif
 
+
+    // Diagnostics: PS2X_ADXT_LOG=1 logs every ADXT handle's status change (ADXT_GetStat 0x239cf8).
+    PS2Runtime::RecompiledFunction g_adxtGetStatOriginal = nullptr;
+    void adxtGetStatLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t handle = getRegU32(ctx, 4);
+        const uint32_t caller = getRegU32(ctx, 31);
+        g_adxtGetStatOriginal(rdram, ctx, runtime);
+        const int32_t stat = static_cast<int32_t>(getRegU32(ctx, 2));
+        static std::mutex mutex;
+        static std::map<uint32_t, int32_t> last;
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = last.find(handle);
+        static uint32_t polls = 0;
+        const bool periodic = stat == 2 && (++polls % 2000u) == 0u;
+        if (it == last.end() || it->second != stat || periodic)
+        {
+            // RNA object of the SFD/BGM channel seen in the hang: bytes +0x58 (reset pending) .. +0x5b (drain pending).
+            uint32_t rnaFlags = 0;
+            std::memcpy(&rnaFlags, rdram + 0x004D9B7Cu, 4);
+            std::cerr << "[adxt] rna+0x58=0x" << std::hex << rnaFlags << std::dec << (periodic ? " (still PREP)" : "") << std::endl;
+            std::cerr << "[adxt] handle=0x" << std::hex << handle << " stat " << std::dec << (it == last.end() ? -99 : it->second)
+                      << " -> " << stat << " ra=0x" << std::hex << caller << std::dec << std::endl;
+            last[handle] = stat;
+        }
+    }
+
     void applyOnimushaMovies(PS2Runtime &runtime)
     {
+        if (const char *v = std::getenv("PS2X_ADXT_LOG"); v && *v == '1')
+        {
+            g_adxtGetStatOriginal = runtime.lookupFunction(0x00239CF8u);
+            if (g_adxtGetStatOriginal)
+                runtime.replaceFunction(0x00239CF8u, adxtGetStatLogged);
+        }
 #if PS2X_HAS_FFMPEG
         const char *flag = std::getenv("PS2X_NATIVE_MOVIES");
         if (flag && *flag == '0')
