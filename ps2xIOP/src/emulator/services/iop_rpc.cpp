@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "iop_rpc.h"
 
 #include "../core/iop_cpu.h"
@@ -251,14 +252,17 @@ namespace ps2x::iop::detail
         case 18:
             setV0(0);
             return true;
-        case 19: // SetRpcQueue
+        case 19: // SetRpcQueue(queue, thread)
+            m_queueThreads[cpu.gpr[4]] = static_cast<int>(cpu.gpr[5]);
             setV0(cpu.gpr[4]);
             return true;
         case 20:
         case 21:
             setV0(0);
             return true;
-        case 22: // RpcLoop
+        case 22: // RpcLoop(queue): the calling thread serves the queue
+            if (const IopThread *running = m_kernel.currentThread())
+                m_queueThreads[cpu.gpr[4]] = running->id;
             m_kernel.sleepCurrent(cpu);
             setV0(0);
             return true;
@@ -310,6 +314,17 @@ namespace ps2x::iop::detail
             }
         }
 
+        {
+            static const bool ahead = []
+            {
+                // Off by default: it did not change the ADX restart hang (boot150). PS2X_IOP_RPC_AHEAD=1 turns it on.
+                const char *v = std::getenv("PS2X_IOP_RPC_AHEAD");
+                return v && *v == '1';
+            }();
+            const auto thread = m_queueThreads.find(server.queue);
+            if (ahead && thread != m_queueThreads.end())
+                executor.runThreadsAhead(thread->second);
+        }
         uint32_t returnPointer = executor.executeGuestFunction(server.function,
                                                                request.function,
                                                                server.buffer,
