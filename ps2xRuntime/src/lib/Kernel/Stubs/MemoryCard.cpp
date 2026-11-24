@@ -442,6 +442,18 @@ namespace ps2_stubs
             std::error_code ec;
             const bool exists = std::filesystem::exists(hostPath, ec) && !ec;
 
+            // mcman accepts a bare SCE_CREAT (no access bits): it creates the file and the
+            // handle can be read and written afterwards.
+            if (access == 0u && create)
+            {
+                if (!exists)
+                {
+                    if (FILE *created = std::fopen(hostPath.string().c_str(), "wb"))
+                        std::fclose(created);
+                }
+                return std::fopen(hostPath.string().c_str(), "r+b");
+            }
+
             const char *mode = "rb";
             if (read && write)
             {
@@ -1039,6 +1051,12 @@ namespace ps2_stubs
                 }
             }
             setMcCommandResultLocked(kMcCmdOpen, result);
+        }
+        {
+            static uint32_t openLogCount = 0;
+            if (openLogCount++ < 32)
+                std::cerr << "[MC] Open port=" << port << " '" << path << "' flags=0x" << std::hex << flags
+                          << std::dec << " -> result=" << result << std::endl;
         }
         setReturnS32(ctx, 0);
     }

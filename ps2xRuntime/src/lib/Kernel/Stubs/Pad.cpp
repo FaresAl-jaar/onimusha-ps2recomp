@@ -1,5 +1,9 @@
 #include "Common.h"
 #include "Pad.h"
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <vector>
 
 namespace ps2_stubs
 {
@@ -841,6 +845,297 @@ namespace ps2_stubs
             }
         }
         return snapshot;
+    }
+
+    // libpad2 and libvib (DualShock 2 through DBCMAN, used by later titles such as Onimusha:
+    // Dawn of Dreams). The real libraries talk to DBCMAN and SIO2 on the IOP, and neither SIO2 nor
+    // a controller is emulated there, so these entry points report a DualShock 2 in port 1 and
+    // fill its data from the host input.
+    namespace
+    {
+        constexpr int32_t kPad2StateNoLink = 0;
+        constexpr int32_t kPad2StateStable = 1;
+        constexpr int kPad2SocketCount = 16;
+        constexpr int kPad2ConnectedPorts = 1;
+        constexpr int32_t kPad2ReadSize = 18; // buttons (2), sticks (4), pressures (12)
+
+        struct Pad2Socket
+        {
+            bool open = false;
+            int port = 0;
+            int slot = 0;
+            uint32_t buffer = 0u;
+        };
+
+        std::mutex g_pad2Mutex;
+        Pad2Socket g_pad2Sockets[kPad2SocketCount]{};
+
+        bool pad2SocketConnected(int socket, int *portOut)
+        {
+            std::lock_guard<std::mutex> lock(g_pad2Mutex);
+            if (socket < 0 || socket >= kPad2SocketCount || !g_pad2Sockets[socket].open)
+                return false;
+            const Pad2Socket &entry = g_pad2Sockets[socket];
+            if (portOut)
+                *portOut = entry.port;
+            return entry.slot == 0 && entry.port >= 0 && entry.port < kPad2ConnectedPorts;
+        }
+
+        // Scripted input for headless test runs: PS2X_PAD_SCRIPT="frame:button[+button]:frames,..."
+        // presses the buttons on port 1 for the given number of reads, starting at that read count.
+        struct Pad2ScriptStep
+        {
+            uint32_t start = 0u;
+            uint32_t length = 1u;
+            uint16_t mask = 0u;
+        };
+
+        uint16_t pad2ButtonMask(const std::string &name)
+        {
+            static const std::pair<const char *, uint16_t> kNames[] = {
+                {"select", kPadBtnSelect}, {"l3", kPadBtnL3}, {"r3", kPadBtnR3}, {"start", kPadBtnStart},
+                {"up", kPadBtnUp}, {"right", kPadBtnRight}, {"down", kPadBtnDown}, {"left", kPadBtnLeft},
+                {"l2", kPadBtnL2}, {"r2", kPadBtnR2}, {"l1", kPadBtnL1}, {"r1", kPadBtnR1},
+                {"triangle", kPadBtnTriangle}, {"circle", kPadBtnCircle}, {"cross", kPadBtnCross},
+                {"square", kPadBtnSquare}};
+            uint16_t mask = 0u;
+            size_t begin = 0u;
+            while (begin <= name.size())
+            {
+                const size_t end = std::min(name.find('+', begin), name.size());
+                const std::string part = name.substr(begin, end - begin);
+                for (const auto &[label, bit] : kNames)
+                {
+                    if (part == label)
+                        mask = static_cast<uint16_t>(mask | bit);
+                }
+                begin = end + 1u;
+            }
+            return mask;
+        }
+
+        const std::vector<Pad2ScriptStep> &pad2Script()
+        {
+            static const std::vector<Pad2ScriptStep> steps = []()
+            {
+                std::vector<Pad2ScriptStep> parsed;
+                const char *env = std::getenv("PS2X_PAD_SCRIPT");
+                if (!env)
+                    return parsed;
+                std::string text(env);
+                size_t begin = 0u;
+                while (begin < text.size())
+                {
+                    const size_t end = std::min(text.find(',', begin), text.size());
+                    const std::string item = text.substr(begin, end - begin);
+                    const size_t c1 = item.find(':');
+                    const size_t c2 = (c1 == std::string::npos) ? std::string::npos : item.find(':', c1 + 1u);
+                    if (c1 != std::string::npos)
+                    {
+                        Pad2ScriptStep step;
+                        step.start = static_cast<uint32_t>(std::strtoul(item.substr(0, c1).c_str(), nullptr, 10));
+                        step.mask = pad2ButtonMask(item.substr(c1 + 1u, (c2 == std::string::npos ? item.size() : c2) - c1 - 1u));
+                        if (c2 != std::string::npos)
+                            step.length = std::max<uint32_t>(1u, static_cast<uint32_t>(std::strtoul(item.substr(c2 + 1u).c_str(), nullptr, 10)));
+                        parsed.push_back(step);
+                    }
+                    begin = end + 1u;
+                }
+                return parsed;
+            }();
+            return steps;
+        }
+
+        void applyPad2Script(PadInputState &state, uint32_t readIndex)
+        {
+            for (const Pad2ScriptStep &step : pad2Script())
+            {
+                if (readIndex >= step.start && readIndex < step.start + step.length)
+                {
+                    state.buttons = static_cast<uint16_t>(state.buttons & ~step.mask);
+                    static uint32_t logged = 0u;
+                    if (logged++ < 64u)
+                        std::fprintf(stderr, "[pad2:script] read=%u buttons=0x%04x\n", readIndex, state.buttons);
+                }
+            }
+        }
+
+        PadInputState samplePad2Input(int port, PS2Runtime *runtime)
+        {
+            PadInputState state;
+            {
+                std::lock_guard<std::mutex> lock(g_padOverrideMutex);
+                if (g_padOverrideEnabled)
+                    return g_padOverrideState;
+            }
+            uint8_t backendData[32]{};
+            if (runtime && runtime->padBackend().readState(port, 0, backendData, sizeof(backendData)))
+            {
+                state.buttons = static_cast<uint16_t>(backendData[2] | (backendData[3] << 8));
+                state.rx = backendData[4];
+                state.ry = backendData[5];
+                state.lx = backendData[6];
+                state.ly = backendData[7];
+                return state;
+            }
+            if (port == 0)
+            {
+                applyGamepadState(state);
+                applyKeyboardState(state, true);
+            }
+            return state;
+        }
+    }
+
+    void scePad2Init(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        {
+            std::lock_guard<std::mutex> lock(g_pad2Mutex);
+            for (Pad2Socket &socket : g_pad2Sockets)
+                socket = Pad2Socket{};
+        }
+        setReturnS32(ctx, 1);
+    }
+
+    void scePad2End(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        scePad2Init(rdram, ctx, runtime);
+    }
+
+    void scePad2CreateSocket(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)runtime;
+        // a0: scePad2SocketParam {flag, port, slot, number}, a1: 64 byte aligned work buffer.
+        const uint32_t param = getRegU32(ctx, 4);
+        const uint32_t buffer = getRegU32(ctx, 5);
+        int port = 0;
+        int slot = 0;
+        if (param != 0u)
+        {
+            if (const uint8_t *p = getMemPtr(rdram, param))
+            {
+                uint32_t words[3]{};
+                std::memcpy(words, p, sizeof(words));
+                port = static_cast<int>(words[1]);
+                slot = static_cast<int>(words[2]);
+            }
+        }
+        std::lock_guard<std::mutex> lock(g_pad2Mutex);
+        for (int i = 0; i < kPad2SocketCount; ++i)
+        {
+            if (!g_pad2Sockets[i].open)
+            {
+                g_pad2Sockets[i] = Pad2Socket{true, port, slot, buffer};
+                setReturnS32(ctx, i);
+                return;
+            }
+        }
+        setReturnS32(ctx, -1);
+    }
+
+    void scePad2DeleteSocket(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        const int socket = static_cast<int>(getRegU32(ctx, 4));
+        std::lock_guard<std::mutex> lock(g_pad2Mutex);
+        if (socket < 0 || socket >= kPad2SocketCount || !g_pad2Sockets[socket].open)
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
+        g_pad2Sockets[socket] = Pad2Socket{};
+        setReturnS32(ctx, 1);
+    }
+
+    void scePad2GetState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        const int socket = static_cast<int>(getRegU32(ctx, 4));
+        setReturnS32(ctx, pad2SocketConnected(socket, nullptr) ? kPad2StateStable : kPad2StateNoLink);
+    }
+
+    void scePad2GetButtonProfile(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)runtime;
+        const int socket = static_cast<int>(getRegU32(ctx, 4));
+        uint8_t *profile = getMemPtr(rdram, getRegU32(ctx, 5));
+        if (!profile || !pad2SocketConnected(socket, nullptr))
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
+        // Every digital button, both sticks and all twelve pressure sensors.
+        std::memset(profile, 0xFF, 4);
+        setReturnS32(ctx, 4);
+    }
+
+    void scePad2Read(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const int socket = static_cast<int>(getRegU32(ctx, 4));
+        const uint32_t dataAddr = getRegU32(ctx, 5);
+        uint8_t *data = getMemPtr(rdram, dataAddr);
+        int port = 0;
+        if (!data || !pad2SocketConnected(socket, &port))
+        {
+            setReturnS32(ctx, 0);
+            return;
+        }
+
+        PadInputState state = samplePad2Input(port, runtime);
+        if (port == 0)
+        {
+            static uint32_t readIndex = 0u;
+            applyPad2Script(state, readIndex++);
+        }
+        auto pressure = [&state](uint16_t mask) -> uint8_t
+        { return ((state.buttons & mask) == 0u) ? 0xFFu : 0u; };
+
+        data[0] = static_cast<uint8_t>(state.buttons & 0xFFu);
+        data[1] = static_cast<uint8_t>((state.buttons >> 8) & 0xFFu);
+        data[2] = state.rx;
+        data[3] = state.ry;
+        data[4] = state.lx;
+        data[5] = state.ly;
+        data[6] = pressure(kPadBtnRight);
+        data[7] = pressure(kPadBtnLeft);
+        data[8] = pressure(kPadBtnUp);
+        data[9] = pressure(kPadBtnDown);
+        data[10] = pressure(kPadBtnTriangle);
+        data[11] = pressure(kPadBtnCircle);
+        data[12] = pressure(kPadBtnCross);
+        data[13] = pressure(kPadBtnSquare);
+        data[14] = pressure(kPadBtnL1);
+        data[15] = pressure(kPadBtnR1);
+        data[16] = pressure(kPadBtnL2);
+        data[17] = pressure(kPadBtnR2);
+        setReturnS32(ctx, kPad2ReadSize);
+    }
+
+    void sceVibGetProfile(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)runtime;
+        const int socket = static_cast<int>(getRegU32(ctx, 4));
+        uint8_t *profile = getMemPtr(rdram, getRegU32(ctx, 5));
+        if (!profile || !pad2SocketConnected(socket, nullptr))
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
+        profile[0] = 0x03u; // small and large motor
+        setReturnS32(ctx, 1);
+    }
+
+    void sceVibSetActParam(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        (void)rdram;
+        (void)runtime;
+        // Rumble is accepted and dropped until the host backend can drive it.
+        const int socket = static_cast<int>(getRegU32(ctx, 4));
+        setReturnS32(ctx, pad2SocketConnected(socket, nullptr) ? 1 : 0);
     }
 
     void setPadOverrideState(uint16_t buttons, uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry)

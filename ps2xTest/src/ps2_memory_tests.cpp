@@ -2216,6 +2216,113 @@ void register_ps2_memory_tests()
             t.IsTrue(imageOk, "raw image continuation after packed setup should not be decoded as VIF/GIF registers");
         });
 
+        tc.Run("fromSPR interleave moves TQWC qwords and skips SQWC qwords in RAM", [](TestCase &t)
+        {
+            // Onimusha's intro copies each decoded 16x16 macroblock (4 qwords per row) from the
+            // scratchpad into a 512 pixel wide strip with D_SQWC = TQWC 4, SQWC 0x7C.
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+            uint8_t *spr = mem.getScratchpad();
+            for (uint32_t i = 0; i < 6u * 16u; ++i)
+                spr[0x100u + i] = static_cast<uint8_t>(i / 16u + 1u);
+
+            mem.writeIORegister(0x1000E030u, (2u << 16) | 3u);
+            mem.writeIORegister(0x1000D010u, 0x2000u);
+            mem.writeIORegister(0x1000D080u, 0x100u);
+            mem.writeIORegister(0x1000D020u, 6u);
+            mem.writeIORegister(0x1000D000u, 0x108u);
+
+            const uint8_t *ram = mem.getRDRAM();
+            const uint32_t expected[] = {0x2000u, 0x2010u, 0x2050u, 0x2060u, 0x20A0u, 0x20B0u};
+            bool ok = true;
+            for (uint32_t i = 0; i < 6u; ++i)
+            {
+                if (ram[expected[i]] != i + 1u || ram[expected[i] + 15u] != i + 1u)
+                    ok = false;
+            }
+            t.IsTrue(ok, "interleaved blocks should land TQWC apart with SQWC gaps");
+            t.Equals(ram[0x2020u], static_cast<uint8_t>(0u), "skipped qwords stay untouched");
+            t.Equals(mem.readIORegister(0x1000D020u), 0u, "QWC should be consumed");
+        });
+
+        tc.Run("IPU reads its bitstream through toIPU DMA", [](TestCase &t)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+            uint8_t *ram = mem.getRDRAM();
+            const uint8_t bits[16] = {0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+                                      0, 0, 0, 0, 0, 0, 0, 0};
+            std::memcpy(ram + 0x3000u, bits, sizeof(bits));
+
+            mem.writeIORegister(0x10002010u, 0x40000000u); // IPU reset
+            mem.writeIORegister(0x1000B410u, 0x3000u);
+            mem.writeIORegister(0x1000B420u, 1u);
+            mem.writeIORegister(0x1000B400u, 0x101u);       // normal, from memory, start
+
+            mem.writeIORegister(0x10002000u, 0x40000000u); // FDEC 0
+            t.Equals(mem.readIORegister(0x10002000u), 0x12345678u, "FDEC should return the first 32 bits");
+            t.Equals(static_cast<uint32_t>(mem.read64(0x10002000u) >> 63), 0u, "IPU should not stay busy");
+
+            mem.writeIORegister(0x10002000u, 0x40000008u); // FDEC 8
+            t.Equals(mem.readIORegister(0x10002000u), 0x3456789Au, "FDEC 8 should advance by one byte");
+            t.Equals(mem.readIORegister(0x1000B400u) & 0x100u, 0u, "toIPU should finish once its qword is read");
+        });
+
+        tc.Run("VIF1 DIRECT image data can arrive through a later DIRECT", [](TestCase &t)
+        {
+            // TTE chains (Onimusha: Dawn of Dreams font upload): CNT tag "NOP, DIRECT 6" carries the
+            // setup and IMAGE tag, then a REF tag "NOP, DIRECT n" carries the image qwords.
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+
+            GS gs;
+            gs.init(mem.getGSVRAM(), static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &mem.gs());
+            GifArbiter arbiter([&](const uint8_t *data, uint32_t sizeBytes)
+            {
+                gs.processGIFPacket(data, sizeBytes);
+            });
+            mem.setGifArbiter(&arbiter);
+
+            const uint64_t bitblt =
+                (static_cast<uint64_t>(1u) << 16) |
+                (static_cast<uint64_t>(1u) << 48);
+            gs.writeRegister(GS_REG_BITBLTBUF, bitblt);
+            gs.writeRegister(GS_REG_TRXPOS, 0ull);
+            gs.writeRegister(GS_REG_TRXREG, (4ull << 0) | (2ull << 32));
+            gs.writeRegister(GS_REG_TRXDIR, 0ull);
+
+            std::vector<uint8_t> packet;
+            appendU32(packet, makeVifCmd(0x00u, 0u, 0u)); // NOP
+            appendU32(packet, makeVifCmd(0x50u, 0u, 1u)); // DIRECT 1: IMAGE tag only.
+            appendU64(packet, makeGifTag(2u, GIF_FMT_IMAGE, 0u, true));
+            appendU64(packet, 0ull);
+            appendU32(packet, makeVifCmd(0x00u, 0u, 0u)); // NOP
+            appendU32(packet, makeVifCmd(0x50u, 0u, 2u)); // DIRECT 2: the image qwords.
+            for (uint32_t i = 0; i < 32u; ++i)
+                packet.push_back(static_cast<uint8_t>(0x40u + i));
+
+            mem.processVIF1Data(packet.data(), static_cast<uint32_t>(packet.size()));
+
+            const uint8_t *vramOut = mem.getGSVRAM();
+            bool imageOk = true;
+            for (uint32_t y = 0; y < 2u && imageOk; ++y)
+            {
+                for (uint32_t x = 0; x < 4u && imageOk; ++x)
+                {
+                    const uint32_t off = GSPSMCT32::addrPSMCT32(0u, 1u, x, y);
+                    for (uint32_t c = 0; c < 4u; ++c)
+                    {
+                        if (vramOut[off + c] != static_cast<uint8_t>(0x40u + y * 16u + x * 4u + c))
+                        {
+                            imageOk = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            t.IsTrue(imageOk, "the second DIRECT's payload should be the image data, without its VIFcodes");
+        });
+
         tc.Run("unaligned accesses throw", [](TestCase &t)
         {
             PS2Memory mem;

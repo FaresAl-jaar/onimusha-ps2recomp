@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -712,6 +713,58 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
 {
     const GSDrawState &state = batch.state;
     const auto &ctx = state.context;
+    static const bool trace = std::getenv("PS2X_TRACE_LOGO") != nullptr;
+    if (trace)
+    {
+        static thread_local unsigned plain = 0, textured = 0;
+        const unsigned n = ++(state.prim.tme ? textured : plain);
+        if (n <= 8 || (n & (n - 1)) == 0)
+            std::fprintf(stderr, "[draw] n=%u textured=%u type=%u fbp=%u tbp=%u\n",
+                n, unsigned(state.prim.tme), unsigned(state.prim.type), unsigned(ctx.frame.fbp), unsigned(ctx.tex0.tbp0));
+    }
+    // PS2X_TRACE_SPRITES=<count> logs textured sprites (glyphs, logos) with their texture coordinates.
+    {
+        static const long spriteLimit = []()
+        {
+            const char *value = std::getenv("PS2X_TRACE_SPRITES");
+            return value ? std::strtol(value, nullptr, 10) : 0L;
+        }();
+        static std::atomic<long> spriteCount{0};
+        // PS2X_TRACE_SPRITES_SKIP_TBP="tbp,tbp,..." leaves out textures that are already understood.
+        static const std::vector<uint32_t> skipTbp = []()
+        {
+            std::vector<uint32_t> list;
+            if (const char *value = std::getenv("PS2X_TRACE_SPRITES_SKIP_TBP"))
+            {
+                const char *cursor = value;
+                while (*cursor)
+                {
+                    char *end = nullptr;
+                    const unsigned long tbp = std::strtoul(cursor, &end, 10);
+                    if (end == cursor)
+                        break;
+                    list.push_back(static_cast<uint32_t>(tbp));
+                    cursor = (*end == ',') ? end + 1 : end;
+                }
+            }
+            return list;
+        }();
+        const bool skipped = std::find(skipTbp.begin(), skipTbp.end(), static_cast<uint32_t>(ctx.tex0.tbp0)) != skipTbp.end();
+        if (spriteLimit > 0 && state.prim.tme && !skipped && spriteCount.load() < spriteLimit)
+        {
+            const long n = spriteCount.fetch_add(1);
+            std::fprintf(stderr,
+                "[sprite] n=%ld type=%u fst=%u tbp=%u tbw=%u psm=0x%x tw=%u th=%u cbp=%u cpsm=0x%x csa=%u fbp=%u "
+                "xy0=(%d,%d) xy1=(%d,%d) uv0=(%u,%u) uv1=(%u,%u) st0=(%g,%g,%g) st1=(%g,%g,%g)\n",
+                n, unsigned(state.prim.type), unsigned(state.prim.fst), unsigned(ctx.tex0.tbp0), unsigned(ctx.tex0.tbw), unsigned(ctx.tex0.psm),
+                unsigned(ctx.tex0.tw), unsigned(ctx.tex0.th), unsigned(ctx.tex0.cbp), unsigned(ctx.tex0.cpsm),
+                unsigned(ctx.tex0.csa), unsigned(ctx.frame.fbp),
+                int(batch.vertices[0].x), int(batch.vertices[0].y), int(batch.vertices[1].x), int(batch.vertices[1].y),
+                unsigned(batch.vertices[0].u), unsigned(batch.vertices[0].v), unsigned(batch.vertices[1].u), unsigned(batch.vertices[1].v),
+                double(batch.vertices[0].s), double(batch.vertices[0].t), double(batch.vertices[0].q),
+                double(batch.vertices[1].s), double(batch.vertices[1].t), double(batch.vertices[1].q));
+        }
+    }
     PS2_IF_AGRESSIVE_LOGS({
         const uint32_t primitiveIndex = s_debugPrimitiveCount.fetch_add(1u, std::memory_order_relaxed);
         if (primitiveIndex < 64u)
@@ -1464,6 +1517,34 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_transfer = command;
+    static const bool trace = std::getenv("PS2X_TRACE_LOGO") != nullptr;
+    if (trace)
+    {
+        static thread_local unsigned transfers = 0;
+        const unsigned n = ++transfers;
+        if (n <= 16 || (n & (n - 1)) == 0)
+            std::fprintf(stderr, "[transfer] n=%u dir=%u dbp=%u size=%ux%u\n",
+                n, unsigned(command.direction), unsigned(command.bitbltbuf.dbp), unsigned(command.trxreg.rrw), unsigned(command.trxreg.rrh));
+    }
+    // PS2X_TRACE_UPLOADS=<count> logs every transfer setup (BITBLTBUF, TRXPOS, TRXREG, TRXDIR).
+    {
+        static const long uploadLimit = []()
+        {
+            const char *value = std::getenv("PS2X_TRACE_UPLOADS");
+            return value ? std::strtol(value, nullptr, 10) : 0L;
+        }();
+        static long uploadCount = 0;
+        if (uploadCount < uploadLimit)
+        {
+            ++uploadCount;
+            std::fprintf(stderr,
+                "[upload] n=%ld dir=%u sbp=%u sbw=%u spsm=0x%x dbp=%u dbw=%u dpsm=0x%x ssa=(%u,%u) dsa=(%u,%u) size=%ux%u\n",
+                uploadCount, unsigned(command.direction), unsigned(command.bitbltbuf.sbp), unsigned(command.bitbltbuf.sbw),
+                unsigned(command.bitbltbuf.spsm), unsigned(command.bitbltbuf.dbp), unsigned(command.bitbltbuf.dbw),
+                unsigned(command.bitbltbuf.dpsm), unsigned(command.trxpos.ssax), unsigned(command.trxpos.ssay),
+                unsigned(command.trxpos.dsax), unsigned(command.trxpos.dsay), unsigned(command.trxreg.rrw), unsigned(command.trxreg.rrh));
+        }
+    }
     m_transferState.x = command.trxpos.dsax;
     m_transferState.y = command.trxpos.dsay;
     m_transferState.totalPixels = static_cast<uint32_t>(command.trxreg.rrw) * static_cast<uint32_t>(command.trxreg.rrh);
@@ -1491,6 +1572,24 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
     const uint32_t rrw = m_transfer.trxreg.rrw;
     const uint32_t dsax = m_transfer.trxpos.dsax;
     uint32_t offset = 0u;
+    if (rrw == 512 && m_transfer.trxreg.rrh == 1)
+    {
+        static const char *path = std::getenv("PS2X_TRACE_ROWS");
+        if (path)
+        {
+            static std::ofstream file(path, std::ios::binary);
+            static unsigned captured = 0;
+            if (file && captured < 32u * 1024u * 1024u)
+            {
+                const uint32_t record[] = { dbp, dbw, dpsm, dsax, m_transfer.trxpos.dsay,
+                    m_transferState.copiedPixels, sizeBytes };
+                file.write(reinterpret_cast<const char *>(record), sizeof(record));
+                file.write(reinterpret_cast<const char *>(data), sizeBytes);
+                captured += sizeBytes;
+                if (m_transfer.trxpos.dsay == 0) file.flush();
+            }
+        }
+    }
 
     auto advancePixel = [&](uint32_t count)
     {
@@ -1873,8 +1972,40 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     decodeDisplaySize(request.display2, width2, height2);
     const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
     const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
+    static const bool traceBanks = std::getenv("PS2X_TRACE_LOGO") != nullptr;
+    static thread_local uint64_t previousBankTick = ~uint64_t{0};
+    if (traceBanks && valid2 && previousBankTick != request.vsyncTick && request.vsyncTick % 30 <= 1)
+    {
+        previousBankTick = request.vsyncTick;
+        unsigned lit[2]{};
+        for (unsigned bank = 0; bank < 2; ++bank)
+            for (unsigned y = 0; y < height2; ++y)
+                for (unsigned x = 0; x < width2; ++x)
+                    if (ReadVramUnlocked(displayFrame2.psm, GSInternal::framePageBaseToBlock(bank * 64),
+                        displayFrame2.fbw, origin2.x + x, origin2.y + y) & 0x00ffffffu)
+                        ++lit[bank];
+        std::fprintf(stderr, "[banks] tick=%llu rgbPixels=%u/%u size=%ux%u psm=%u\n",
+            static_cast<unsigned long long>(request.vsyncTick), lit[0], lit[1], width2, height2, unsigned(displayFrame2.psm));
+    }
+    // Sample the completed scanout decision, including both sources in blend mode.
+    auto traceScanout = [&](const char *path, uint32_t source1, uint32_t source2)
+    {
+        static const bool enabled = std::getenv("PS2X_TRACE_SCANOUT") != nullptr;
+        if (!enabled) return;
+        static thread_local uint64_t lastTick = ~uint64_t{0};
+        if (lastTick == request.vsyncTick || (request.vsyncTick > 12 && request.vsyncTick % 30 > 1)) return;
+        lastTick = request.vsyncTick;
+        std::fprintf(stderr, "[scanout] tick=%llu path=%s pmode=%#llx dispfb1=%#llx display1=%#llx dispfb2=%#llx display2=%#llx valid=%u/%u src1=%u src2=%u draw=%u/%u\n",
+            static_cast<unsigned long long>(request.vsyncTick), path, static_cast<unsigned long long>(request.pmode),
+            static_cast<unsigned long long>(request.dispfb1), static_cast<unsigned long long>(request.display1),
+            static_cast<unsigned long long>(request.dispfb2), static_cast<unsigned long long>(request.display2),
+            unsigned(valid1), unsigned(valid2), source1, source2, request.contextFrames[0].fbp, request.contextFrames[1].fbp);
+    };
     if (!valid1 && !valid2)
+    {
+        traceScanout("off", 0, 0);
         return result;
+    }
 
     auto copySource = [&](const GSFrameReg &displayFrame,
                           const GSDisplayReadOrigin &origin,
@@ -1960,6 +2091,7 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
                 applyFieldPresentation(result.pixels, result.width, result.height, oddField);
             result.displayFbp = displayFrame1.fbp;
             result.sourceFbp = selected1.fbp;
+            traceScanout("blend", selected1.fbp, selected2.fbp);
             return result;
         }
     }
@@ -1976,5 +2108,6 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     normalizePresentationAlpha(result.pixels, result.width, result.height);
     result.displayFbp = displayFrame.fbp;
     result.sourceFbp = selected.fbp;
+    traceScanout(valid1 ? "crt1" : "crt2", valid1 ? selected.fbp : 0, valid1 ? 0 : selected.fbp);
     return result;
 }

@@ -7,6 +7,36 @@ namespace ps2_stubs
 {
     namespace
     {
+        // Callback registered with sceCdCallback(). Libraries such as CRI's DVCI
+        // wait for it to report that an asynchronous command has finished.
+        uint32_t g_cdUserCallback = 0u;
+        uint32_t g_cdUserCallbackGp = 0u;
+        constexpr int32_t kCdFuncRead = 1; // SCECdFuncRead
+
+        void queueCdUserCallback(PS2Runtime *runtime, int32_t reason)
+        {
+            if (!runtime || g_cdUserCallback == 0u || !runtime->hasFunction(g_cdUserCallback))
+            {
+                return;
+            }
+            try
+            {
+                GuestInvocation invocation{};
+                invocation.kind = GuestInvocationKind::Interrupt;
+                invocation.tag = g_cdUserCallback;
+                invocation.context = runtime->cpu();
+                invocation.context.pc = g_cdUserCallback;
+                SET_GPR_U32(&invocation.context, 4, static_cast<uint32_t>(reason));
+                SET_GPR_U32(&invocation.context, 28, g_cdUserCallbackGp);
+                SET_GPR_U32(&invocation.context, 29, 0u);
+                SET_GPR_U32(&invocation.context, 31, 0u);
+                runtime->eeScheduler().queueInvocation(std::move(invocation));
+            }
+            catch (...)
+            {
+            }
+        }
+
         constexpr uint32_t kCdStreamBlocking = 1u;
         constexpr uint32_t kDvdSectorsPerSecondX1 = 675u;
         constexpr uint32_t kDvdSectorsPerSecondX4 = kDvdSectorsPerSecondX1 * 4u;
@@ -313,10 +343,28 @@ namespace ps2_stubs
             }
         }
 
+        static uint32_t readLogCount = 0;
+        static uint32_t lateLogCount = 0;
+        static const uint32_t lateFloor = std::getenv("PS2X_CD_LOG_FLOOR") ? static_cast<uint32_t>(std::strtoul(std::getenv("PS2X_CD_LOG_FLOOR"), nullptr, 16)) : 0x142000u;
+        static const uint32_t lateMax = std::getenv("PS2X_CD_LOG_MAX") ? static_cast<uint32_t>(std::strtoul(std::getenv("PS2X_CD_LOG_MAX"), nullptr, 10)) : 48u;
+        const bool lateRead = selected.lbn >= lateFloor && lateLogCount < lateMax;
+        if (lateRead)
+            ++lateLogCount;
+        if (readLogCount < 24 || lateRead || !ok)
+        {
+            std::cerr << "[sceCdRead] lbn=0x" << std::hex << selected.lbn
+                      << " sectors=0x" << selected.sectors
+                      << " buf=0x" << selected.buf
+                      << " ra=0x" << getRegU32(ctx, 31) << std::dec
+                      << (ok ? " ok" : " FAILED") << std::endl;
+            ++readLogCount;
+        }
+
         if (ok)
         {
             g_cdStreamingLbn = selected.lbn + selected.sectors;
             setReturnS32(ctx, 1); // command accepted/success
+            queueCdUserCallback(runtime, kCdFuncRead);
             return;
         }
 
@@ -355,7 +403,13 @@ namespace ps2_stubs
 
     void sceCdCallback(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        setReturnS32(ctx, 0);
+        // void *sceCdCallback(void (*func)(int reason)): returns the previous callback.
+        const uint32_t previous = g_cdUserCallback;
+        g_cdUserCallback = getRegU32(ctx, 4);
+        g_cdUserCallbackGp = getRegU32(ctx, 28);
+        std::cerr << "[sceCdCallback] func=0x" << std::hex << g_cdUserCallback
+                  << " previous=0x" << previous << std::dec << std::endl;
+        setReturnS32(ctx, static_cast<int32_t>(previous));
     }
 
     void sceCdChangeThreadPriority(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

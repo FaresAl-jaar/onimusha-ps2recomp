@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "ps2_debug_panel.h"
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
@@ -2204,6 +2205,15 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
     if (!m_initialized)
     {
         return;
+    }
+
+    static bool s_startHiddenChecked = false;
+    if (!s_startHiddenChecked)
+    {
+        s_startHiddenChecked = true;
+        // PS2X_HIDE_DEBUG_UI=1 starts with the panel closed (F1 still opens it).
+        if (const char *hide = std::getenv("PS2X_HIDE_DEBUG_UI"); hide && hide[0] != '\0' && hide[0] != '0' && m_visible)
+            toggleVisible();
     }
 
     if (IsKeyPressed(KEY_F1))

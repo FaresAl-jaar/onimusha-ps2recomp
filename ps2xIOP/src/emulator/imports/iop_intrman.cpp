@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "iop_intrman.h"
 
 #include "../core/iop_cpu.h"
@@ -34,6 +35,7 @@ namespace ps2x::iop::detail
             setV0(0u);
             return true;
         case 4: // RegisterIntrHandler
+            std::fprintf(stderr, "[iop:intr] RegisterIntrHandler irq=0x%x mode=%u handler=0x%x arg=0x%x\n", a0, a1, a2, a3);
             m_handlers[static_cast<int>(a0)] = {a2, a3, cpu.gpr[28]};
             setV0(0u);
             return true;
@@ -42,6 +44,7 @@ namespace ps2x::iop::detail
             setV0(0u);
             return true;
         case 6: // EnableIntr
+            std::fprintf(stderr, "[iop:intr] EnableIntr irq=0x%x\n", a0);
             m_enabled[static_cast<int>(a0)] = true;
             if (a0 < 32u)
                 m_memory.setInterruptMask(m_memory.interruptMask() | (1u << a0));
@@ -94,6 +97,18 @@ namespace ps2x::iop::detail
 
     bool IopIntrman::dispatchInterrupt(int irq, IopGuestExecutor &executor) const
     {
+        {
+            static uint32_t logCount24 = 0, logCountOther = 0;
+            uint32_t &logCount = (irq == 0x24) ? logCount24 : logCountOther;
+            if (logCount++ < 20)
+            {
+                const auto en = m_enabled.find(irq);
+                const auto h = m_handlers.find(irq);
+                std::fprintf(stderr, "[iop:intr] irq=0x%x enabled=%d handler=0x%x\n", irq,
+                             (en != m_enabled.end() && en->second) ? 1 : 0,
+                             h != m_handlers.end() ? h->second.function : 0u);
+            }
+        }
         const auto enabled = m_enabled.find(irq);
         if (enabled == m_enabled.end() || !enabled->second)
             return false;

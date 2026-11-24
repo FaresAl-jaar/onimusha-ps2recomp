@@ -1605,6 +1605,13 @@ namespace
                (static_cast<uint64_t>(alp & 0xFF) << 8);
     }
 
+    // sceGsSetDefDispEnv initializes PMODE to 0x66 in SLUS_211.80.
+    // The single- and dual-context draw helpers both use that display initializer.
+    static uint64_t defaultDisplayEnvPmode()
+    {
+        return makePmode(0u, 1u, 1u, 1u, 0u, 0u);
+    }
+
     static uint64_t makeDispFb(uint32_t fbp, uint32_t fbw, uint32_t psm, uint32_t dbx, uint32_t dby)
     {
         return (static_cast<uint64_t>(fbp & 0x1FF) << 0) |
@@ -1812,6 +1819,7 @@ namespace
             return false;
         GsDispEnvMem env{};
         std::memcpy(&env, ptr, sizeof(env));
+        env.pmode = defaultDisplayEnvPmode();
         env.dispfb = dispfb;
         env.display = display;
         std::memcpy(ptr, &env, sizeof(env));

@@ -3962,18 +3962,25 @@ void register_ps2_gs_tests()
                 0xD0u, 0xE0u, 0xF0u, 0xFFu,
             };
 
-            writeGsImageTest(rdram, kImageAddr, image);
             std::memcpy(rdram + kSrcAddr, pixels, sizeof(pixels));
 
             R5900Context loadCtx{};
             setRegU32(loadCtx, 4, kImageAddr);
+            setRegU32(loadCtx, 6, 1u);
+            setRegU32(loadCtx, 10, 2u);
+            setRegU32(loadCtx, 11, 2u);
+            ps2_stubs::sceGsSetDefLoadImage(rdram, &loadCtx, &runtime);
+            t.Equals(getRegU32Test(loadCtx, 2), 6u, "load image header occupies six quadwords");
+            uint64_t imageTag = 0;
+            std::memcpy(&imageTag, rdram + kImageAddr + 0x50, sizeof(imageTag));
+            t.Equals(imageTag, (2ull << 58) | 0x8001ull, "four CT32 pixels occupy one IMAGE quadword");
             setRegU32(loadCtx, 5, kSrcAddr);
             ps2_stubs::sceGsExecLoadImage(rdram, &loadCtx, &runtime);
             t.Equals(static_cast<int32_t>(getRegU32Test(loadCtx, 2)), 0,
                      "sceGsExecLoadImage should succeed for a simple CT32 upload");
             uint64_t loadTag = 0u;
             std::memcpy(&loadTag, rdram + runtime.guestHeapBase(), sizeof(loadTag));
-            t.Equals(loadTag, 0x1000000000008004ull,
+            t.Equals(loadTag, 0x1000000000000004ull,
                      "sceGsExecLoadImage should populate the packed A+D GIF tag in guest RAM");
             uint64_t loadReg1 = 0u;
             uint64_t loadReg2 = 0u;
@@ -3991,6 +3998,7 @@ void register_ps2_gs_tests()
                                     "sceGsExecLoadImage should free its temporary GIF packet");
 
             R5900Context storeCtx{};
+            writeGsImageTest(rdram, kImageAddr, image);
             setRegU32(storeCtx, 4, kImageAddr);
             setRegU32(storeCtx, 5, kDstAddr);
             ps2_stubs::sceGsExecStoreImage(rdram, &storeCtx, &runtime);
@@ -4194,7 +4202,8 @@ void register_ps2_gs_tests()
                      "VSync callback should receive a positive tick value");
             t.Equals(g_gsSyncCallbackGp.load(std::memory_order_acquire), kGsCallbackGp,
                      "callback invocation should preserve the registered GP");
-            t.IsTrue(g_gsSyncCallbackSp.load(std::memory_order_acquire) >= 0x01F00000u,
+            const uint32_t callbackSp = g_gsSyncCallbackSp.load(std::memory_order_acquire);
+            t.IsTrue(callbackSp > 0x00090000u && callbackSp <= 0x000FF000u,
                      "callback invocation should use the reserved async stack pool");
             t.IsTrue(g_gsSyncCallbackSp.load(std::memory_order_acquire) != kGsCallbackCallerSp,
                      "callback invocation must not reuse the caller stack");

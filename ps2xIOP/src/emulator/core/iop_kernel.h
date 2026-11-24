@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 
 namespace ps2x::iop::detail
@@ -68,6 +69,11 @@ namespace ps2x::iop::detail
 
         [[nodiscard]] size_t threadCount() const noexcept { return m_threads.size(); }
 
+        // A blocking call made outside any IOP thread (an RPC server function that the EE calls
+        // synchronously, for example) cannot yield. The pump advances emulated time to the next
+        // pending interrupt, callback or timer event and services it; false means nothing is pending.
+        void setSyncWaitPump(std::function<bool()> pump) { m_syncWaitPump = std::move(pump); }
+
     private:
         struct Semaphore
         {
@@ -91,6 +97,9 @@ namespace ps2x::iop::detail
         [[nodiscard]] static bool eventSatisfied(const EventFlag &event, uint32_t bits, uint32_t mode);
         void wakeEventWaiters(EventFlag &event);
 
+        [[nodiscard]] bool pumpUntil(const std::function<bool()> &condition);
+
+        std::function<bool()> m_syncWaitPump;
         IopMemory &m_memory;
         std::map<int, IopThread> m_threads;
         std::map<int, Semaphore> m_semaphores;

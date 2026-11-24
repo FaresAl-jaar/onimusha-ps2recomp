@@ -302,9 +302,48 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 
     uint32_t pos = 0;
 
+    // Feeds qwords into a PATH2 IMAGE transfer that an earlier GIF tag left open and returns how
+    // many qwords it used. The GIF keeps waiting for the image data between DIRECT commands.
+    auto continuePendingImage = [&](const uint8_t *src, uint32_t availableQw) -> uint32_t
+    {
+        const uint32_t chunkQw = std::min<uint32_t>(m_vif1PendingPath2ImageQwc, availableQw);
+        if (chunkQw == 0u)
+            return 0u;
+        std::vector<uint8_t> imagePacket(16u + static_cast<size_t>(chunkQw) * 16u, 0u);
+        const uint64_t imageTag =
+            static_cast<uint64_t>(chunkQw & 0x7FFFu) |
+            ((m_vif1PendingPath2ImageQwc == chunkQw) ? (1ull << 15) : 0ull) |
+            (static_cast<uint64_t>(kGifFmtImage) << 58);
+        std::memcpy(imagePacket.data(), &imageTag, sizeof(imageTag));
+        std::memcpy(imagePacket.data() + 16u, src, static_cast<size_t>(chunkQw) * 16u);
+        submitGifPacket(GifPathId::Path2, imagePacket.data(), static_cast<uint32_t>(imagePacket.size()), true, m_vif1PendingPath2DirectHl);
+        m_vif1PendingPath2ImageQwc -= chunkQw;
+        if (m_vif1PendingPath2ImageQwc == 0u)
+            m_vif1PendingPath2DirectHl = false;
+        return chunkQw;
+    };
+
+    // True when the words at offset are up to three NOPs followed by DIRECT or DIRECTHL. DMA chains
+    // with CHCR.TTE carry "NOP, DIRECT n" in the tag's upper half in front of the image data, so
+    // those words are VIFcodes and the image continues through that DIRECT.
+    auto directFollows = [&](uint32_t offset) -> bool
+    {
+        for (uint32_t nops = 0; nops <= 3u && offset + 4u <= sizeBytes; ++nops, offset += 4u)
+        {
+            uint32_t word = 0u;
+            std::memcpy(&word, data + offset, sizeof(word));
+            const uint8_t op = static_cast<uint8_t>((word >> 24) & 0x7Fu);
+            if (op == VIF_DIRECT || op == VIF_DIRECTHL)
+                return true;
+            if (op != VIF_NOP)
+                return false;
+        }
+        return false;
+    };
+
     while (pos + 4 <= sizeBytes)
     {
-        if (m_vif1PendingPath2ImageQwc != 0u)
+        if (m_vif1PendingPath2ImageQwc != 0u && !directFollows(pos))
         {
             const uint32_t availableQw = (sizeBytes - pos) / 16u;
             if (availableQw == 0u)
@@ -312,22 +351,8 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 break;
             }
 
-            const uint32_t chunkQw = std::min<uint32_t>(m_vif1PendingPath2ImageQwc, availableQw);
-            std::vector<uint8_t> imagePacket(16u + static_cast<size_t>(chunkQw) * 16u, 0u);
-            const uint64_t imageTag =
-                static_cast<uint64_t>(chunkQw & 0x7FFFu) |
-                ((m_vif1PendingPath2ImageQwc == chunkQw) ? (1ull << 15) : 0ull) |
-                (static_cast<uint64_t>(kGifFmtImage) << 58);
-            std::memcpy(imagePacket.data(), &imageTag, sizeof(imageTag));
-            std::memcpy(imagePacket.data() + 16u, data + pos, static_cast<size_t>(chunkQw) * 16u);
-            submitGifPacket(GifPathId::Path2, imagePacket.data(), static_cast<uint32_t>(imagePacket.size()), true, m_vif1PendingPath2DirectHl);
-
-            pos += chunkQw * 16u;
-            m_vif1PendingPath2ImageQwc -= chunkQw;
-            if (m_vif1PendingPath2ImageQwc == 0u)
-            {
-                m_vif1PendingPath2DirectHl = false;
-            }
+            // Legacy layout: raw image qwords right after the DIRECT that carried the IMAGE tag.
+            pos += continuePendingImage(data + pos, availableQw) * 16u;
             continue;
         }
 
@@ -498,13 +523,20 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             if (qwCount > 0)
             {
                 const bool directHl = (opcode == VIF_DIRECTHL);
-                submitGifPacket(GifPathId::Path2, data + pos, qwCount * 16, true, directHl);
-
-                const uint32_t pendingImageQw = pendingGifImageQwc(data + pos, qwCount * 16u);
-                if (pendingImageQw != 0u)
+                // Image data for an IMAGE tag sent by an earlier DIRECT comes first.
+                const uint32_t imageQw = continuePendingImage(data + pos, qwCount);
+                const uint32_t restQw = qwCount - imageQw;
+                if (restQw > 0u)
                 {
-                    m_vif1PendingPath2ImageQwc = pendingImageQw;
-                    m_vif1PendingPath2DirectHl = directHl;
+                    const uint8_t *rest = data + pos + imageQw * 16u;
+                    submitGifPacket(GifPathId::Path2, rest, restQw * 16u, true, directHl);
+
+                    const uint32_t pendingImageQw = pendingGifImageQwc(rest, restQw * 16u);
+                    if (pendingImageQw != 0u)
+                    {
+                        m_vif1PendingPath2ImageQwc = pendingImageQw;
+                        m_vif1PendingPath2DirectHl = directHl;
+                    }
                 }
             }
 

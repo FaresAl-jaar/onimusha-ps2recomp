@@ -826,9 +826,31 @@ inline __m128i ps2_u64_to_epi64_pair(uint64_t value)
     return _mm_set1_epi64x(static_cast<long long>(value));
 }
 
-#define PS2_PMFHL_LW(hi, lo) _mm_unpacklo_epi64(ps2_u64_to_epi64_pair(lo), ps2_u64_to_epi64_pair(hi))
-#define PS2_PMFHL_UW(hi, lo) _mm_unpackhi_epi64(ps2_u64_to_epi64_pair(lo), ps2_u64_to_epi64_pair(hi))
-#define PS2_PMFHL_SLW(hi, lo) _mm_packs_epi32(ps2_u64_to_epi64_pair(lo), ps2_u64_to_epi64_pair(hi))
+// PMFHL works on the 128-bit HI/LO pair. Pipeline 0 (MULT/DIV) holds bits 0..63 in ctx->hi/lo,
+// pipeline 1 (MULT1/DIV1) bits 64..127 in ctx->hi1/lo1, which follow hi and lo in R5900Context.
+// LW: rd.w0 = LO.w0, rd.w1 = HI.w0, rd.w2 = LO.w2, rd.w3 = HI.w2 (soft float uses this to
+// get the full 64-bit MULTU product). UW does the same with the odd words.
+inline __m128i ps2_pmfhl_lw(uint64_t hi, uint64_t lo, uint64_t hi1, uint64_t lo1)
+{
+    return _mm_set_epi32(static_cast<int>(hi1), static_cast<int>(lo1), static_cast<int>(hi), static_cast<int>(lo));
+}
+inline __m128i ps2_pmfhl_uw(uint64_t hi, uint64_t lo, uint64_t hi1, uint64_t lo1)
+{
+    return _mm_set_epi32(static_cast<int>(hi1 >> 32), static_cast<int>(lo1 >> 32), static_cast<int>(hi >> 32), static_cast<int>(lo >> 32));
+}
+inline int64_t ps2_pmfhl_sat32(uint64_t hi, uint64_t lo)
+{
+    const int64_t v = static_cast<int64_t>((hi << 32) | (lo & 0xFFFFFFFFull));
+    return v > 0x7FFFFFFFll ? 0x7FFFFFFFll : (v < -0x80000000ll ? -0x80000000ll : v);
+}
+inline __m128i ps2_pmfhl_slw(uint64_t hi, uint64_t lo, uint64_t hi1, uint64_t lo1)
+{
+    return _mm_set_epi64x(ps2_pmfhl_sat32(hi1, lo1), ps2_pmfhl_sat32(hi, lo));
+}
+// The generated code passes ctx->hi and ctx->lo; hi1/lo1 sit two slots further in the context.
+#define PS2_PMFHL_LW(hi, lo) ps2_pmfhl_lw((hi), (lo), (&(hi))[2], (&(lo))[2])
+#define PS2_PMFHL_UW(hi, lo) ps2_pmfhl_uw((hi), (lo), (&(hi))[2], (&(lo))[2])
+#define PS2_PMFHL_SLW(hi, lo) ps2_pmfhl_slw((hi), (lo), (&(hi))[2], (&(lo))[2])
 #define PS2_PMFHL_LH(hi, lo) _mm_shuffle_epi32(_mm_packs_epi32(ps2_u64_to_epi64_pair(lo), ps2_u64_to_epi64_pair(hi)), _MM_SHUFFLE(3, 1, 2, 0))
 #define PS2_PMFHL_SH(hi, lo) _mm_shufflehi_epi16(_mm_shufflelo_epi16(_mm_packs_epi32(ps2_u64_to_epi64_pair(lo), ps2_u64_to_epi64_pair(hi)), _MM_SHUFFLE(3, 1, 2, 0)), _MM_SHUFFLE(3, 1, 2, 0))
 

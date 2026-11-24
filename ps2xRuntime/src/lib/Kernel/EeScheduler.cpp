@@ -1,3 +1,4 @@
+#include <iostream>
 #include "runtime/ee_scheduler.h"
 
 #include "ps2_log.h"
@@ -110,6 +111,7 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
     m_rescheduleRequested = false;
     m_timeSliceExpired = false;
     m_insideInterrupt = false;
+    m_syncIrqStackTop = 0u;
     m_pendingEeTimerInterrupts = 0u;
     m_eeCycle = 0u;
     m_sliceEndCycle = kDefaultTimeSliceCycles;
@@ -245,6 +247,15 @@ void EeScheduler::run()
                     }
                 }
                 continue;
+            }
+            {
+                extern std::string ps2xFormatDispatchHistory();
+                std::cerr << "[thread:returned] id=" << running->id
+                          << std::hex << " entry=0x" << running->entry
+                          << " sp=0x" << getRegU32(&context, 29)
+                          << " ra=0x" << getRegU32(&context, 31)
+                          << " v0=0x" << getRegU32(&context, 2) << std::dec
+                          << " trace=" << ps2xFormatDispatchHistory() << std::endl;
             }
             makeDormant(*running);
             m_currentThreadId = 0;
@@ -423,7 +434,9 @@ void EeScheduler::setupCurrentThread(uint32_t stack, uint32_t stackSize, uint32_
 int EeScheduler::createThread(const EeThreadCreateParams &params)
 {
     assertExecutor();
-    if (params.priority < 1 || params.priority >= kPriorityCount)
+    // ExecPS2 runs the main thread at priority 0 and libraries such as CRI ADXM
+    // create helper threads at the caller's priority, so 0 must be accepted.
+    if (params.priority < 0 || params.priority >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
     }
@@ -701,7 +714,7 @@ int EeScheduler::cancelWakeup(int id)
 int EeScheduler::changePriority(int id, int priority, bool interruptSafe, int &oldPriority)
 {
     assertExecutor();
-    if (priority < 1 || priority >= kPriorityCount)
+    if (priority < 0 || priority >= kPriorityCount)
     {
         return KE_ILLEGAL_PRIORITY;
     }
@@ -1285,6 +1298,71 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
         SET_GPR_U32(&invocation.context, 31, 0u);
         queueInvocation(std::move(invocation));
     }
+}
+
+void EeScheduler::runIrqHandlersNow(bool dmac, uint32_t cause)
+{
+    static int depth = 0;
+    if (depth > 0)
+        return;
+    const uint32_t mask = dmac ? m_enabledDmacMask : m_enabledIntcMask;
+    if (cause < 32u && (mask & (1u << cause)) == 0u)
+        return;
+    const auto &handlers = dmac ? m_dmacHandlers : m_intcHandlers;
+    std::vector<EeIrqHandler> matching;
+    for (const auto &[id, handler] : handlers)
+    {
+        (void)id;
+        if (handler.enabled && handler.cause == cause && handler.handler != 0u &&
+            m_runtime.hasFunction(handler.handler))
+        {
+            matching.push_back(handler);
+        }
+    }
+    if (matching.empty())
+        return;
+    std::sort(matching.begin(), matching.end(), [](const EeIrqHandler &left, const EeIrqHandler &right)
+              { return left.order < right.order; });
+
+    if (m_syncIrqStackTop == 0u)
+        m_syncIrqStackTop = m_runtime.reserveAsyncCallbackStack(0x4000u, 16u);
+    const uint32_t stackTop = m_syncIrqStackTop;
+    if (stackTop == 0u)
+        return;
+
+    ++depth;
+    const bool savedInside = m_insideInterrupt;
+    const bool savedExecuting = m_guestExecuting.load(std::memory_order_acquire);
+    for (const EeIrqHandler &handler : matching)
+    {
+        R5900Context context = GuestInvocation{}.context;
+        context.pc = handler.handler;
+        SET_GPR_U32(&context, 4, cause);
+        SET_GPR_U32(&context, 5, handler.argument);
+        SET_GPR_U32(&context, 28, handler.gp);
+        SET_GPR_U32(&context, 29, stackTop);
+        SET_GPR_U32(&context, 31, 0u);
+        uint32_t steps = 0u;
+        while (context.pc != 0u && steps++ < 4000000u)
+        {
+            if (!m_runtime.hasFunction(context.pc))
+                break;
+            PS2Runtime::RecompiledFunction function = m_runtime.lookupFunction(context.pc);
+            m_insideInterrupt = true;
+            m_guestExecuting.store(true, std::memory_order_release);
+            try
+            {
+                function(m_rdram, &context, &m_runtime);
+            }
+            catch (const EeDispatcherTransfer &)
+            {
+                break;
+            }
+        }
+    }
+    m_insideInterrupt = savedInside;
+    m_guestExecuting.store(savedExecuting, std::memory_order_release);
+    --depth;
 }
 
 void EeScheduler::setVSyncFlag(uint32_t flagAddress, uint32_t tickAddress)
@@ -1896,7 +1974,9 @@ void EeScheduler::processEvent(const EeEvent &event)
             invocation.context.pc = m_gsVSyncCallback;
             SET_GPR_U32(&invocation.context, 4, static_cast<uint32_t>(m_vsyncTick));
             SET_GPR_U32(&invocation.context, 28, m_gsVSyncCallbackGp);
-            SET_GPR_U32(&invocation.context, 29, m_gsVSyncCallbackSp);
+            // Run on the interrupt stack: the stack pointer captured when the callback
+            // was registered points into a live thread stack and gets clobbered.
+            SET_GPR_U32(&invocation.context, 29, 0u);
             SET_GPR_U32(&invocation.context, 31, 0u);
             queueInvocation(std::move(invocation));
         }

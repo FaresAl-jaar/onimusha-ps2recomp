@@ -1,3 +1,6 @@
+#include <cstdio>
+#include <vector>
+#include <cstdlib>
 #include "ps2_runtime.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
@@ -87,6 +90,9 @@ struct ProgramHeader
 
 namespace
 {
+    constexpr uint32_t kAsyncCallbackStackFloor = 0x00090000u;
+    constexpr uint32_t kAsyncCallbackStackTop = 0x000FF000u;
+
     constexpr uint32_t kGuestHeapDefaultBase = 0x00100000u;
     constexpr uint32_t kGuestHeapDefaultAlignment = 16u;
     constexpr uint32_t kGuestHeapSafetyPad = 0x1000u;
@@ -471,10 +477,30 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
         }
     }
 
+    // Capture the same packed frame that is about to be uploaded to the window.
+    if (const char *directory = std::getenv("PS2X_SCANOUT_SHOTS"))
+    {
+        static uint64_t previousBucket = ~uint64_t{0};
+        const uint64_t bucket = currentTick / 120;
+        if (bucket != previousBucket && bucket < 60 && width && height && !s_scratch.empty())
+        {
+            previousBucket = bucket;
+            const auto path = std::filesystem::path(directory) / ("tick-" + std::to_string(currentTick) + ".png");
+            Image snapshot{s_scratch.data(), static_cast<int>(width), static_cast<int>(height), 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+            ExportImage(snapshot, path.string().c_str());
+        }
+    }
     UpdateTexture(tex, s_uploadBuffer.data());
     outWidth = width;
     outHeight = height;
     s_hasUploadedFrame = true;
+}
+
+extern void (*g_ps2xGsSignalHook)();
+void ps2xRefreshActiveDmaChains();
+namespace
+{
+    PS2Runtime *s_signalRuntime = nullptr;
 }
 
 PS2Runtime::PS2Runtime()
@@ -483,6 +509,17 @@ PS2Runtime::PS2Runtime()
     m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
 
     m_eeScheduler = std::make_unique<EeScheduler>(*this);
+
+    // GS SIGNAL: serve the INTC cause 0 handlers while the GS waits, then let the rest of
+    // the running DMA chain see what the handler wrote.
+    s_signalRuntime = this;
+    g_ps2xGsSignalHook = []()
+    {
+        if (!s_signalRuntime)
+            return;
+        s_signalRuntime->eeScheduler().runIrqHandlersNow(false, 0u);
+        ps2xRefreshActiveDmaChains();
+    };
 
     // Assign rather than memset: R5900Context's constructor zeroes itself and
     // then applies the COP0 reset values, which a memset here would discard.
@@ -503,8 +540,11 @@ PS2Runtime::PS2Runtime()
     m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
     m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
     m_guestHeapConfigured = false;
-    m_asyncCallbackStackFloor = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-    m_asyncCallbackStackTop = PS2_RAM_SIZE;
+    // Interrupt/callback stacks live in the kernel area below the game image, like
+    // the EE kernel's own interrupt stack. The top of RDRAM holds the main thread
+    // stack (SetupThread with stack == -1) and must not be shared.
+    m_asyncCallbackStackFloor = kAsyncCallbackStackFloor;
+    m_asyncCallbackStackTop = kAsyncCallbackStackTop;
 }
 
 void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
@@ -526,6 +566,11 @@ void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
 
 PS2Runtime::~PS2Runtime()
 {
+    if (s_signalRuntime == this)
+    {
+        s_signalRuntime = nullptr;
+        g_ps2xGsSignalHook = nullptr;
+    }
     try
     {
         requestStop();
@@ -881,6 +926,16 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
         const uint64_t regionSize = scratch ? static_cast<uint64_t>(PS2_SCRATCHPAD_SIZE)
                                             : static_cast<uint64_t>(PS2_RAM_SIZE);
         const uint64_t segmentMemEnd = static_cast<uint64_t>(physAddr) + static_cast<uint64_t>(ph.memsz);
+        if (segmentMemEnd > regionSize && ph.filesz == 0u)
+        {
+            // Empty (bss only) segment outside RDRAM, e.g. a linker artifact. The PS2
+            // loader does not copy anything for it, so skip it instead of failing.
+            std::cerr << "ELF segment " << i << " is empty and outside "
+                      << (scratch ? "scratchpad" : "RDRAM")
+                      << " (vaddr=0x" << std::hex << ph.vaddr
+                      << " memsz=0x" << ph.memsz << std::dec << "), skipping." << std::endl;
+            continue;
+        }
         if (segmentMemEnd > regionSize)
         {
             std::cerr << "ELF segment " << i << " exceeds "
@@ -971,9 +1026,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
     }
     {
         std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
-        const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
-        m_asyncCallbackStackFloor = std::min(std::max(hardLimit, suggestedHeapBase), PS2_RAM_SIZE);
-        m_asyncCallbackStackTop = PS2_RAM_SIZE;
+        m_asyncCallbackStackFloor = kAsyncCallbackStackFloor;
+        m_asyncCallbackStackTop = kAsyncCallbackStackTop;
     }
 
     LoadedModule module;
@@ -1350,10 +1404,66 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                                      GuestBranchKind kind,
                                      const char *debugName)
 {
+    {
+        // Debug watchpoint: report every change of the guest word at PS2X_WATCH_ADDR.
+        static uint32_t watchAddr = []() -> uint32_t {
+            const char *env = std::getenv("PS2X_WATCH_ADDR");
+            return env ? static_cast<uint32_t>(std::strtoul(env, nullptr, 16)) & 0x1FFFFFF8u : 0u;
+        }();
+        static uint64_t watchLast = 0;
+        static bool watchInit = false;
+        static uint32_t watchReports = 0;
+        if (watchAddr != 0u && rdram)
+        {
+            uint64_t cur = 0;
+            std::memcpy(&cur, rdram + watchAddr, sizeof(cur));
+            if (!watchInit)
+            {
+                watchLast = cur;
+                watchInit = true;
+            }
+            else if (cur != watchLast && watchReports < 64)
+            {
+                ++watchReports;
+                std::cerr << "[watch] 0x" << std::hex << watchAddr << " 0x" << watchLast << " -> 0x" << cur
+                          << " thread=" << std::dec << (m_eeScheduler ? m_eeScheduler->currentThreadId() : -2)
+                          << std::hex << " at branch src=0x" << sourcePc << " -> 0x" << targetPc
+                          << " sp=0x" << getRegU32(ctx, 29) << " ra=0x" << getRegU32(ctx, 31) << std::dec
+                          << " trace=" << formatDispatchHistory() << std::endl;
+                watchLast = cur;
+            }
+        }
+    }
     ctx->pc = targetPc;
     const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
 
     // Every inter-function transfer is also a deterministic EE safe point.
+    {
+        // PS2X_FUNC_HIST=<ticks>: every <ticks> EE VSyncs print the most called targets.
+        static const uint64_t histWindow = []() -> uint64_t {
+            const char *env = std::getenv("PS2X_FUNC_HIST");
+            return env ? std::strtoull(env, nullptr, 10) : 0u;
+        }();
+        if (histWindow != 0u && m_eeScheduler)
+        {
+            static std::unordered_map<uint32_t, uint64_t> hist;
+            static uint64_t windowStart = 0u;
+            ++hist[targetPc];
+            const uint64_t now = m_eeScheduler->currentVSyncTick();
+            if (now >= windowStart + histWindow)
+            {
+                std::vector<std::pair<uint32_t, uint64_t>> sorted(hist.begin(), hist.end());
+                std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+                std::cerr << "[funchist] tick=" << now << std::hex;
+                static const size_t top = std::getenv("PS2X_FUNC_HIST_TOP") ? std::strtoul(std::getenv("PS2X_FUNC_HIST_TOP"), nullptr, 10) : 40u;
+                for (size_t i = 0; i < sorted.size() && i < top; ++i)
+                    std::cerr << " " << sorted[i].first << ":" << std::dec << sorted[i].second << std::hex;
+                std::cerr << std::dec << " distinct=" << sorted.size() << std::endl;
+                hist.clear();
+                windowStart = now;
+            }
+        }
+    }
     // Backward edges inside generated functions use eeCheckpointDue(), while
     // this charge bounds straight-line call chains that have no local loop.
     if (m_eeScheduler && m_eeScheduler->checkpointDue(EeScheduler::kGuestDispatchCycles))
@@ -2390,6 +2500,48 @@ void PS2Runtime::run()
     {
         PS2_IF_AGRESSIVE_LOGS({
             tick++;
+            // PS2X_DUMP_RAM="tick,tick,..." writes the 32 MB of EE RAM to ps2x_ram_<tick>.bin once the EE
+            // VSync counter (the tick used by the scanout shots) reaches each of those values.
+            {
+                static std::vector<uint64_t> dumpTicks = []()
+                {
+                    std::vector<uint64_t> ticks;
+                    if (const char *spec = std::getenv("PS2X_DUMP_RAM"))
+                    {
+                        const char *cursor = spec;
+                        while (*cursor)
+                        {
+                            char *end = nullptr;
+                            const unsigned long long value = std::strtoull(cursor, &end, 10);
+                            if (end == cursor)
+                                break;
+                            ticks.push_back(static_cast<uint64_t>(value));
+                            cursor = (*end == ',') ? end + 1 : end;
+                        }
+                    }
+                    return ticks;
+                }();
+                const uint64_t vsyncTick = m_eeScheduler ? m_eeScheduler->currentVSyncTick() : tick;
+                auto due = std::find_if(dumpTicks.begin(), dumpTicks.end(), [&](uint64_t t) { return vsyncTick >= t; });
+                if (due != dumpTicks.end())
+                {
+                    dumpTicks.erase(due);
+                    const std::string path = "ps2x_ram_" + std::to_string(vsyncTick) + ".bin";
+                    if (FILE *dump = std::fopen(path.c_str(), "wb"))
+                    {
+                        std::fwrite(m_memory.getRDRAM(), 1, PS2_RAM_SIZE, dump);
+                        std::fclose(dump);
+                        std::cerr << "[ramdump] vsync=" << vsyncTick << " -> " << path << std::endl;
+                    }
+                    // The 4 MB of GS local memory goes next to it.
+                    const std::string vramPath = "ps2x_vram_" + std::to_string(vsyncTick) + ".bin";
+                    if (FILE *dump = std::fopen(vramPath.c_str(), "wb"))
+                    {
+                        std::fwrite(m_memory.getGSVRAM(), 1, 4u * 1024u * 1024u, dump);
+                        std::fclose(dump);
+                    }
+                }
+            }
             if ((tick % 120) == 0)
             {
                 uint64_t curDma = m_memory.dmaStartCount();
@@ -2417,7 +2569,21 @@ void PS2Runtime::run()
                                                << " gsw=" << curGs
                                                << " vif=" << curVif
                                                << std::endl);
-
+                if ((tick % 600) == 0)
+                {
+                    for (const auto &t : eeSnapshot.threads)
+                    {
+                        RUNTIME_LOG("[run:thread] id=" << t.id
+                                                       << " status=" << static_cast<int>(t.status)
+                                                       << " wait=" << static_cast<int>(t.waitReason)
+                                                       << " waitId=" << t.waitId
+                                                       << " prio=" << t.currentPriority
+                                                       << std::hex << " pc=0x" << t.pc
+                                                       << " ra=0x" << t.ra
+                                                       << " entry=0x" << t.entry << std::dec
+                                                       << std::endl);
+                    }
+                }
             }
         });
         uint32_t presentWidth = FB_WIDTH;
@@ -2470,3 +2636,13 @@ void PS2Runtime::run()
 
     RUNTIME_LOG("[run] exiting loop");
 }
+
+// Debug helper used by the EE scheduler when a thread returns to address 0.
+std::string ps2xFormatDispatchHistory()
+{
+    return formatDispatchHistory();
+}
+
+// PS2_PMFHL_* in ps2_runtime_macros.h reach hi1/lo1 through the address of hi/lo.
+static_assert(offsetof(R5900Context, hi1) == offsetof(R5900Context, hi) + 2 * sizeof(uint64_t), "hi1 must follow lo");
+static_assert(offsetof(R5900Context, lo1) == offsetof(R5900Context, lo) + 2 * sizeof(uint64_t), "lo1 must follow hi1");

@@ -1,3 +1,6 @@
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
 #include "iop_cpu.h"
 #include "iop_memory.h"
 
@@ -54,6 +57,39 @@ namespace ps2x::iop::detail
 
     bool IopCpuCore::executeInstruction(IopCpuState &cpu)
     {
+        {
+            // Debug: PS2X_IOP_TRACE="addr,addr,..." logs registers when the IOP reaches them.
+            static std::vector<uint32_t> tracePcs = []() {
+                std::vector<uint32_t> v;
+                if (const char *env = std::getenv("PS2X_IOP_TRACE"))
+                {
+                    const char *p = env;
+                    while (*p)
+                    {
+                        char *end = nullptr;
+                        const unsigned long a = std::strtoul(p, &end, 16);
+                        if (end == p) break;
+                        v.push_back(static_cast<uint32_t>(a));
+                        p = (*end == ',') ? end + 1 : end;
+                    }
+                }
+                return v;
+            }();
+            if (!tracePcs.empty())
+            {
+                static std::vector<uint32_t> traceCounts(tracePcs.size(), 0u);
+                for (size_t ti = 0; ti < tracePcs.size(); ++ti)
+                {
+                    const uint32_t t = tracePcs[ti];
+                    if (t == cpu.pc && traceCounts[ti] < 12u)
+                    {
+                        ++traceCounts[ti];
+                        std::fprintf(stderr, "[iop:trace] pc=0x%x v0=0x%x a0=0x%x a1=0x%x a2=0x%x a3=0x%x s0=0x%x s1=0x%x ra=0x%x sp=0x%x\n",
+                                     cpu.pc, cpu.gpr[2], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[16], cpu.gpr[17], cpu.gpr[31], cpu.gpr[29]);
+                    }
+                }
+            }
+        }
         const uint32_t pc = cpu.pc;
         const uint32_t instruction = m_memory.read32(pc);
         const bool wasDelaySlot = cpu.branchPending;

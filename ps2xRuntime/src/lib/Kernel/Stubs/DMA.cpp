@@ -32,6 +32,37 @@ namespace ps2_stubs
 
         std::mutex g_dmaEnvMutex;
         SceDmaEnv g_dmaCurrentEnv;
+
+        // libdma sceDmaRecvN / sceDmaRecvI: normal or interleaved transfer into memory.
+        // Mirrors the guest code: scratchpad addresses (0x7xxxxxxx) get the SPR bit, MADR is
+        // left alone when it holds 0xFFFFFFFF, and CHCR keeps its other bits.
+        int32_t submitDmaRecvNormal(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, bool interleave)
+        {
+            if (!runtime)
+                return -1;
+            const uint32_t channelBase = resolveDmaChannelBase(rdram, getRegU32(ctx, 4));
+            if (channelBase == 0u)
+                return -1;
+            uint32_t address = getRegU32(ctx, 5);
+            if ((address >> 28) == 7u)
+                address = (address & 0x0FFFFFFFu) | 0x80000000u;
+            const uint32_t qwc = getRegU32(ctx, 6);
+
+            PS2Memory &mem = runtime->memory();
+            if (mem.readIORegister(channelBase + 0x10u) != 0xFFFFFFFFu)
+                mem.writeIORegister(channelBase + 0x10u, address);
+            mem.writeIORegister(channelBase + 0x20u, qwc & 0xFFFFu);
+            uint32_t chcr = mem.readIORegister(channelBase + 0x00u);
+            chcr &= ~0xDu;
+            if (interleave)
+                chcr |= 0x8u;
+            mem.writeIORegister(channelBase + 0x00u, chcr | 0x100u);
+            mem.processPendingTransfers();
+
+            for (const uint32_t cause : mem.consumeCompletedDmacCauses())
+                ps2_syscalls::dispatchDmacHandlersForCause(rdram, runtime, cause);
+            return 0;
+        }
     }
 
     void DmaAddr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -162,12 +193,12 @@ namespace ps2_stubs
 
     void sceDmaRecvI(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceDmaRecvI", rdram, ctx, runtime);
+        setReturnS32(ctx, submitDmaRecvNormal(rdram, ctx, runtime, true));
     }
 
     void sceDmaRecvN(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        TODO_NAMED("sceDmaRecvN", rdram, ctx, runtime);
+        setReturnS32(ctx, submitDmaRecvNormal(rdram, ctx, runtime, false));
     }
 
     void sceDmaReset(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

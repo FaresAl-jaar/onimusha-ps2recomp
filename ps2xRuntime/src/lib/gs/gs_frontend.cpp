@@ -10,6 +10,9 @@
 #include <iostream>
 #include <sstream>
 
+// Set by the runtime: serves the GS interrupt for a SIGNAL right away.
+void (*g_ps2xGsSignalHook)() = nullptr;
+
 namespace
 {
     static constexpr uint32_t kHostFrameWidth = 640u;
@@ -1472,6 +1475,9 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
             lo = (lo & ~mask) | (id & mask);
             m_privRegs->siglblid = (m_privRegs->siglblid & 0xFFFFFFFF00000000ULL) | lo;
             m_privRegs->csr.fetch_or(0x1);
+            // The GS stalls on SIGNAL until the CPU has served the interrupt (IMR.SIGMSK clear).
+            if ((m_privRegs->imr & 0x100u) == 0u && g_ps2xGsSignalHook)
+                g_ps2xGsSignalHook();
         }
         break;
     }

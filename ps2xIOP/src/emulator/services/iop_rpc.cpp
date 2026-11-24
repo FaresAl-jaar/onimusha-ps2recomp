@@ -22,7 +22,9 @@ namespace ps2x::iop::detail
     {
         m_servers.clear();
         m_nextDmaId = 1u;
-        m_sifInitialized = false;
+        // On hardware the IOP kernel brings SIF up while booting (sifman/sifcmd are
+        // resident from the boot image), long before any game module is loaded.
+        m_sifInitialized = true;
     }
 
     bool IopRpcBridge::dispatchSifManImport(uint16_t ordinal, IopCpuState &cpu)
@@ -148,8 +150,24 @@ namespace ps2x::iop::detail
         case 10:
         case 11:
         case 14: // InitRpc
-        case 15:
-        case 16:
+            setV0(0);
+            return true;
+        case 15: // sceSifBindRpc(cd, sid, mode): IOP client binding to an EE server
+        {
+            // IOP modules retry until cd->server (offset 0x24) is non-NULL. EE servers
+            // are hosted by the runtime, so report the binding as established and point
+            // the server field at the client block (only checked for non-NULL).
+            const uint32_t clientData = cpu.gpr[4];
+            const uint32_t sid = cpu.gpr[5];
+            if (clientData != 0u && m_memory.ownsRamRange(clientData, 0x28u))
+            {
+                m_memory.write32(clientData + 0x04u, sid);        // hdr.rpc_id
+                m_memory.write32(clientData + 0x24u, clientData); // server
+            }
+            setV0(0);
+            return true;
+        }
+        case 16: // sceSifCallRpc to an EE server: not forwarded yet, completes immediately
             setV0(0);
             return true;
         case 12: // sceSifSendCmd

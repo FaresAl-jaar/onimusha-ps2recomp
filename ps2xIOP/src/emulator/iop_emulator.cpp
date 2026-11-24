@@ -1,3 +1,5 @@
+#include <string>
+#include <cstdio>
 #include "iop_emulator.h"
 #include "imports/iop_cdvd.h"
 #include "core/iop_cpu.h"
@@ -24,6 +26,7 @@
 #include <span>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 namespace ps2x::iop::detail
 {
@@ -111,6 +114,27 @@ namespace ps2x::iop::detail
               loadcore(memory, imports)
         {
             reset();
+            kernel.setSyncWaitPump([this]() { return pumpSyncWait(); });
+        }
+
+        // Advances the IOP clock to the next pending DMA completion, guest callback or timer event
+        // and services it, for blocking kernel calls made outside any IOP thread.
+        bool pumpSyncWait()
+        {
+            constexpr uint64_t kNone = ~0ull;
+            uint64_t next = kNone;
+            for (const auto &[irq, completionCycle] : pendingDmaInterrupts)
+                next = std::min(next, completionCycle);
+            if (!pendingGuestCallbacks.empty())
+                next = std::min(next, pendingGuestCallbacks.begin()->first);
+            next = timrman.nextEventCycle(next);
+            if (next == kNone)
+                return false;
+            totalCycles = std::max(totalCycles + 1u, next);
+            servicePendingDmaInterrupts();
+            servicePendingGuestCallbacks();
+            timrman.serviceDue(totalCycles, *this);
+            return true;
         }
 
         void reset()
@@ -177,7 +201,14 @@ namespace ps2x::iop::detail
         void schedulePendingDma()
         {
             if (const auto dma = memory.takeDmaStart())
+            {
                 pendingDmaInterrupts[dma->irq] = totalCycles + dma->delayCycles;
+                static uint32_t logCount = 0;
+                if (dma->irq == 0x24 && logCount++ < 20)
+                    std::fprintf(stderr, "[iop:dma-sched] irq=0x%x now=%llu due=%llu servicing=%d\n", dma->irq,
+                                 (unsigned long long)totalCycles, (unsigned long long)(totalCycles + dma->delayCycles),
+                                 servicingDmaInterrupts ? 1 : 0);
+            }
         }
 
         bool readRam(uint32_t address, void *destination, size_t size) const
@@ -487,6 +518,16 @@ namespace ps2x::iop::detail
                 return;
 
             servicingDmaInterrupts = true;
+            {
+                static uint64_t lastLog = 0;
+                const auto it24 = pendingDmaInterrupts.find(0x24);
+                if (it24 != pendingDmaInterrupts.end() && totalCycles - lastLog > 2000000u)
+                {
+                    lastLog = totalCycles;
+                    std::fprintf(stderr, "[iop:dma-pending] irq=0x24 due=%llu now=%llu\n",
+                                 (unsigned long long)it24->second, (unsigned long long)totalCycles);
+                }
+            }
 
             std::vector<int> completed;
             for (auto it = pendingDmaInterrupts.begin(); it != pendingDmaInterrupts.end();)
@@ -614,19 +655,58 @@ namespace ps2x::iop::detail
             module.entry = loaded.entry;
             module.gp = loaded.gp;
 
-            uint32_t args = 0u;
+            // Build argc/argv the way the IOP module loader does: argv[0] is the module
+            // path, followed by one pointer per NUL separated string in the argument
+            // buffer, then a terminating NULL pointer.
+            std::vector<uint32_t> argOffsets;
+            const uint32_t pathBytes = static_cast<uint32_t>(module.path.size()) + 1u;
             if (arguments && argumentSize)
             {
-                args = allocate(argumentSize + 1u, 16u);
-                if (args)
+                const auto *bytes = static_cast<const uint8_t *>(arguments);
+                uint32_t start = 0u;
+                for (uint32_t i = 0u; i < argumentSize; ++i)
                 {
-                    writeRam(args, arguments, argumentSize);
-                    write8(args + argumentSize, 0u);
+                    if (bytes[i] == 0u)
+                    {
+                        argOffsets.push_back(start);
+                        start = i + 1u;
+                    }
                 }
+                if (start < argumentSize)
+                    argOffsets.push_back(start);
             }
-            const uint32_t startResult = callFunction(module.entry, argumentSize, args, 0u, 0u, module.gp);
-            if (args)
-                freeAllocation(args);
+            const uint32_t argc = 1u + static_cast<uint32_t>(argOffsets.size());
+            {
+                std::string joined;
+                for (const uint32_t o : argOffsets)
+                {
+                    joined += " [";
+                    joined += reinterpret_cast<const char *>(static_cast<const uint8_t *>(arguments) + o);
+                    joined += "]";
+                }
+                std::fprintf(stderr, "[iop:args] %s argc=%u%s\n", module.path.c_str(), argc, joined.c_str());
+            }
+            const uint32_t vectorBytes = (argc + 1u) * 4u;
+            const uint32_t blockBytes = vectorBytes + pathBytes + argumentSize + 1u;
+            uint32_t block = allocate(blockBytes, 16u);
+            uint32_t argv = 0u;
+            if (block)
+            {
+                argv = block;
+                const uint32_t pathAddr = block + vectorBytes;
+                const uint32_t argsAddr = pathAddr + pathBytes;
+                writeRam(pathAddr, module.path.c_str(), pathBytes);
+                if (arguments && argumentSize)
+                    writeRam(argsAddr, arguments, argumentSize);
+                write8(argsAddr + argumentSize, 0u);
+                write32(argv, pathAddr);
+                for (size_t i = 0; i < argOffsets.size(); ++i)
+                    write32(argv + 4u * static_cast<uint32_t>(i + 1u), argsAddr + argOffsets[i]);
+                write32(argv + 4u * argc, 0u);
+            }
+            const uint32_t startResult = callFunction(module.entry, block ? argc : 0u, argv, 0u, 0u, module.gp);
+            if (block)
+                freeAllocation(block);
             module.resident = startResult == 0u || startResult == 2u;
             result.moduleId = module.id;
             result.startResult = static_cast<int32_t>(startResult);

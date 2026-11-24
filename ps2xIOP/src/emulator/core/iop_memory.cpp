@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "iop_memory.h"
 
 #include <algorithm>
@@ -251,6 +252,11 @@ namespace ps2x::iop::detail
             return;
 
         const bool secondCore = address == kDmaSpu1Chcr;
+        {
+            static uint32_t logCount[2] = {0, 0};
+            if (logCount[secondCore ? 1 : 0]++ < 20)
+                std::fprintf(stderr, "[iop:spu2dma] core=%d chcr=0x%x\n", secondCore ? 1 : 0, value);
+        }
         m_hardware[address] = value & ~kDmaStart;
 
         const uint32_t statusAddress = 0x1F900344u + (secondCore ? 0x400u : 0u);

@@ -73,8 +73,33 @@ namespace ps2x::iop::detail
         case 7:
             setV0(static_cast<uint32_t>(std::tolower(static_cast<unsigned char>(a0))));
             return true;
-        case 8:
-        case 9: // ctype table is optional for most IRXs.
+        case 8: // look_ctype_table(c): ctype flags of one character
+        {
+            // sysclib ctype flags: 0x01 upper, 0x02 lower, 0x04 digit, 0x08 space,
+            // 0x10 punct, 0x20 control, 0x40 hex letter, 0x80 blank.
+            const int32_t c = static_cast<int32_t>(a0);
+            uint32_t flags = 0u;
+            if (c >= 0 && c < 128)
+            {
+                if (c < 32 || c == 127)
+                    flags |= 0x20u;
+                if (c >= 9 && c <= 13)
+                    flags |= 0x08u;
+                if (c == ' ')
+                    flags |= 0x08u | 0x80u;
+                if (c >= '0' && c <= '9')
+                    flags |= 0x04u;
+                else if (c >= 'A' && c <= 'Z')
+                    flags |= 0x01u | ((c <= 'F') ? 0x40u : 0u);
+                else if (c >= 'a' && c <= 'z')
+                    flags |= 0x02u | ((c <= 'f') ? 0x40u : 0u);
+                else if (c > 32 && c < 127)
+                    flags |= 0x10u;
+            }
+            setV0(flags);
+            return true;
+        }
+        case 9: // get_ctype_table: not provided, callers fall back to look_ctype_table
             setV0(0);
             return true;
         case 10: // memchr
