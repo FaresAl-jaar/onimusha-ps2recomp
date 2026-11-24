@@ -1869,6 +1869,97 @@ bool PS2Memory::tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr)
         completeDmacChannel(channelBase, fromScratchpad ? 8u : 9u);
         return true;
     }
+    if (mode == 1u && channelBase == kSprToChannel)
+    {
+        // Source chain into the scratchpad. libmpeg fetches its motion compensation reference
+        // blocks this way (dmaRefImage, REF tags of 0x30 qwords ending with REFE).
+        uint32_t sadr = m_ioRegisters[channelBase + 0x80u] & 0x3FF0u;
+        uint32_t tadr = m_ioRegisters[channelBase + 0x30u];
+        uint32_t qwc = m_ioRegisters[channelBase + 0x20u] & 0xFFFFu;
+        uint32_t madr = m_ioRegisters[channelBase + 0x10u];
+        uint32_t asr[2] = {};
+        uint32_t asp = 0u;
+        auto ramAt = [this](uint32_t address) -> uint8_t *
+        {
+            if ((address & 0x80000000u) != 0u)
+                return m_scratchpad + (address & 0x3FF0u);
+            const uint32_t physical = address & 0x01FFFFF0u;
+            return physical + 16u <= PS2_RAM_SIZE ? m_rdram + physical : nullptr;
+        };
+        auto copyIn = [&](uint32_t from, uint32_t count) -> bool
+        {
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                const uint8_t *src = ramAt(from + i * 16u);
+                if (!src)
+                    return false;
+                std::memcpy(m_scratchpad + sadr, src, 16u);
+                sadr = (sadr + 16u) & 0x3FF0u;
+            }
+            return true;
+        };
+        // Data left over from a stopped transfer comes first.
+        if (qwc != 0u)
+            copyIn(madr, qwc);
+        bool done = false;
+        for (int guard = 0; !done && guard < 4096; ++guard)
+        {
+            const uint8_t *tagPtr = ramAt(tadr);
+            if (!tagPtr)
+                break;
+            uint64_t tag = 0u;
+            std::memcpy(&tag, tagPtr, sizeof(tag));
+            const uint32_t count = static_cast<uint32_t>(tag & 0xFFFFu);
+            const uint32_t id = static_cast<uint32_t>((tag >> 28) & 0x7u);
+            const uint32_t addr = static_cast<uint32_t>(tag >> 32) & 0xFFFFFFF0u;
+            const bool irq = ((tag >> 31) & 1u) != 0u;
+            switch (id)
+            {
+            case 0: // REFE
+                copyIn(addr, count);
+                tadr += 16u;
+                done = true;
+                break;
+            case 1: // CNT
+                copyIn(tadr + 16u, count);
+                tadr = tadr + 16u + count * 16u;
+                break;
+            case 2: // NEXT
+                copyIn(tadr + 16u, count);
+                tadr = addr;
+                break;
+            case 3: // REF
+            case 4: // REFS
+                copyIn(addr, count);
+                tadr += 16u;
+                break;
+            case 5: // CALL
+                copyIn(tadr + 16u, count);
+                if (asp < 2u)
+                    asr[asp++] = tadr + 16u + count * 16u;
+                tadr = addr;
+                break;
+            case 6: // RET
+                copyIn(tadr + 16u, count);
+                if (asp > 0u)
+                    tadr = asr[--asp];
+                else
+                    done = true;
+                break;
+            default: // END
+                copyIn(tadr + 16u, count);
+                done = true;
+                break;
+            }
+            if (irq && (chcr & 0x80u) != 0u)
+                done = true;
+        }
+        m_ioRegisters[channelBase + 0x30u] = tadr;
+        m_ioRegisters[channelBase + 0x20u] = 0u;
+        m_ioRegisters[channelBase + 0x80u] = sadr;
+        completeDmacChannel(channelBase, 9u);
+        return true;
+    }
     if (mode != 0u)
         return false;
 
