@@ -680,10 +680,60 @@ namespace
         const bool periodic = stat == 2 && (++polls % 2000u) == 0u;
         if (it == last.end() || it->second != stat || periodic)
         {
-            // RNA object of the SFD/BGM channel seen in the hang: bytes +0x58 (reset pending) .. +0x5b (drain pending).
-            uint32_t rnaFlags = 0;
-            std::memcpy(&rnaFlags, rdram + 0x004D9B7Cu, 4);
-            std::cerr << "[adxt] rna+0x58=0x" << std::hex << rnaFlags << std::dec << (periodic ? " (still PREP)" : "") << std::endl;
+            // Find the handle's RNA object at run time: a pointer (directly in the handle, or one step further)
+            // to an object with the RNA layout seen in 0x24ec00/0x24f4a0: +0x52 channel count 1..8, +0x59 == 1,
+            // +0x58/+0x5b flags 0 or 1, +0x2c capacity. Each channel (+0x08 table) has its SJ at +0x08.
+            auto isRam = [](uint32_t a) { return a >= 0x00100000u && a < 0x01FF0000u; };
+            auto looksRna = [&](uint32_t o)
+            {
+                const int nch = static_cast<int8_t>(rdram[o + 0x52u]);
+                return nch >= 1 && nch <= 8 && rdram[o + 0x59u] == 1u && rdram[o + 0x58u] <= 1u && rdram[o + 0x5Bu] <= 1u &&
+                       readU32(rdram, o + 0x2Cu) != 0u && readU32(rdram, o + 0x2Cu) <= 0x100000u && isRam(readU32(rdram, o + 0x08u));
+            };
+            std::cerr << "[adxt] handle=0x" << std::hex << handle;
+            int found = 0;
+            for (uint32_t off1 = 0; off1 < 0xC0u && found < 2; off1 += 4u)
+            {
+                const uint32_t p1 = readU32(rdram, handle + off1);
+                if (!isRam(p1))
+                    continue;
+                for (int depth = 0; depth < 2 && found < 2; ++depth)
+                    for (uint32_t off2 = 0; off2 < (depth ? 0x80u : 4u) && found < 2; off2 += 4u)
+                    {
+                        const uint32_t o = depth ? readU32(rdram, p1 + off2) : p1;
+                        if (!isRam(o) || !looksRna(o))
+                            continue;
+                        ++found;
+                        std::cerr << " rna[h+0x" << off1;
+                        if (depth)
+                            std::cerr << "->+0x" << off2;
+                        std::cerr << "]=0x" << o << " f58..5b=" << readU32(rdram, o + 0x58u) << " cap=0x" << readU32(rdram, o + 0x2Cu)
+                                  << " nch=" << std::dec << static_cast<int>(static_cast<int8_t>(rdram[o + 0x52u])) << std::hex;
+                        const int nch = static_cast<int8_t>(rdram[o + 0x52u]);
+                        for (int c = 0; c < nch && c < 2; ++c)
+                        {
+                            const uint32_t channel = readU32(rdram, o + 0x08u + 4u * c);
+                            const uint32_t sj = isRam(channel) ? readU32(rdram, channel + 0x08u) : 0u;
+                            std::cerr << " ch" << c << "=0x" << channel << " sj=0x" << sj << ":";
+                            for (uint32_t i = 0; isRam(sj) && i < 0x30u; i += 4u)
+                                std::cerr << " " << readU32(rdram, sj + i);
+                            // The chunk nodes the SJ lists point at (16 bytes each: words as stored).
+                            for (uint32_t i = 0x0Cu; isRam(sj) && i < 0x24u; i += 4u)
+                            {
+                                const uint32_t node = readU32(rdram, sj + i);
+                                if (!isRam(node))
+                                    continue;
+                                std::cerr << " [node 0x" << node << ":";
+                                for (uint32_t k = 0; k < 16u; k += 4u)
+                                    std::cerr << " " << readU32(rdram, node + k);
+                                std::cerr << "]";
+                            }
+                        }
+                    }
+            }
+            if (!found)
+                std::cerr << " no RNA found";
+            std::cerr << std::dec << (periodic ? " (still PREP)" : "") << std::endl;
             std::cerr << "[adxt] handle=0x" << std::hex << handle << " stat " << std::dec << (it == last.end() ? -99 : it->second)
                       << " -> " << stat << " ra=0x" << std::hex << caller << std::dec << std::endl;
             last[handle] = stat;
