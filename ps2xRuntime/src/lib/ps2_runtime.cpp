@@ -88,6 +88,9 @@ struct ProgramHeader
     uint32_t align;
 };
 
+// Host audio mixed into the SPU2 output (native movie soundtracks).
+void (*g_ps2xHostAudioMix)(int16_t *frames, size_t count) = nullptr;
+
 namespace
 {
     constexpr uint32_t kAsyncCallbackStackFloor = 0x00090000u;
@@ -532,6 +535,8 @@ namespace
             const size_t got = ps2x::iop::spu2ReadOutput(frames, kSpuStreamFrames);
             // Underrun: fill the rest with silence instead of stalling the host loop.
             std::memset(frames + got * 2u, 0, (kSpuStreamFrames - got) * 2u * sizeof(int16_t));
+            if (g_ps2xHostAudioMix)
+                g_ps2xHostAudioMix(frames, kSpuStreamFrames);
             UpdateAudioStream(s_spuStream, frames, static_cast<int>(kSpuStreamFrames));
         }
     }
@@ -549,6 +554,8 @@ namespace
     void closeSpuStream() {}
 #endif
 }
+
+void ps2xRegisterOnimushaOverrides();
 
 PS2Runtime::PS2Runtime()
 {
@@ -1106,6 +1113,7 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
 
     m_iopSubsystem->reset();
 
+    ps2xRegisterOnimushaOverrides();
     ps2_game_overrides::applyMatching(*this,
                                       elfPath,
                                       m_cpuContext.pc,
