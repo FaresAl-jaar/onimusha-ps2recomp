@@ -496,11 +496,57 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     s_hasUploadedFrame = true;
 }
 
+#include "ps2x/iop/spu2_output.h"
+
 extern void (*g_ps2xGsSignalHook)();
 void ps2xRefreshActiveDmaChains();
 namespace
 {
     PS2Runtime *s_signalRuntime = nullptr;
+
+#if !defined(PLATFORM_VITA)
+    // Host side of the emulated SPU2: 48 kHz stereo, fed from the IOP output buffer.
+    constexpr unsigned kSpuStreamFrames = 1024u;
+    AudioStream s_spuStream{};
+    bool s_spuStreamReady = false;
+
+    void openSpuStream()
+    {
+        if (!IsAudioDeviceReady() || std::getenv("PS2X_NO_SPU2_AUDIO"))
+            return;
+        SetAudioStreamBufferSizeDefault(static_cast<int>(kSpuStreamFrames));
+        s_spuStream = LoadAudioStream(48000u, 16u, 2u);
+        s_spuStreamReady = IsAudioStreamValid(s_spuStream);
+        if (s_spuStreamReady)
+            PlayAudioStream(s_spuStream);
+    }
+
+    void pumpSpuStream()
+    {
+        if (!s_spuStreamReady)
+            return;
+        static int16_t frames[kSpuStreamFrames * 2u];
+        while (IsAudioStreamProcessed(s_spuStream))
+        {
+            const size_t got = ps2x::iop::spu2ReadOutput(frames, kSpuStreamFrames);
+            // Underrun: fill the rest with silence instead of stalling the host loop.
+            std::memset(frames + got * 2u, 0, (kSpuStreamFrames - got) * 2u * sizeof(int16_t));
+            UpdateAudioStream(s_spuStream, frames, static_cast<int>(kSpuStreamFrames));
+        }
+    }
+
+    void closeSpuStream()
+    {
+        if (!s_spuStreamReady)
+            return;
+        UnloadAudioStream(s_spuStream);
+        s_spuStreamReady = false;
+    }
+#else
+    void openSpuStream() {}
+    void pumpSpuStream() {}
+    void closeSpuStream() {}
+#endif
 }
 
 PS2Runtime::PS2Runtime()
@@ -582,6 +628,7 @@ PS2Runtime::~PS2Runtime()
 #else
         if (IsAudioDeviceReady())
         {
+            closeSpuStream();
             CloseAudioDevice();
             m_audioBackend.setAudioReady(false);
         }
@@ -780,6 +827,7 @@ bool PS2Runtime::initialize(const char *title)
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
         InitAudioDevice();
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
+        openSpuStream();
 #endif
         SetTargetFPS(60);
         if (m_debugUiInitCallback)
@@ -2611,6 +2659,7 @@ void PS2Runtime::run()
             m_debugUiDrawCallback(*this, m_debugUiUserData);
         }
         EndDrawing();
+        pumpSpuStream();
 
         if (WindowShouldClose())
         {
