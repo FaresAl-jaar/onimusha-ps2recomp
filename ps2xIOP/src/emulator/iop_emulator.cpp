@@ -1,6 +1,7 @@
 #include <string>
 #include <cstdio>
 #include "iop_emulator.h"
+#include "spu2/iop_spu2.h"
 #include "imports/iop_cdvd.h"
 #include "core/iop_cpu.h"
 #include "imports/iop_heaplib.h"
@@ -128,6 +129,7 @@ namespace ps2x::iop::detail
             if (!pendingGuestCallbacks.empty())
                 next = std::min(next, pendingGuestCallbacks.begin()->first);
             next = timrman.nextEventCycle(next);
+            next = std::min(next, spu2::nextTickCycle());
             if (next == kNone)
                 return false;
             totalCycles = std::max(totalCycles + 1u, next);
@@ -140,6 +142,20 @@ namespace ps2x::iop::detail
         void reset()
         {
             memory.reset();
+            spu2::reset();
+            spu2::Hooks spuHooks;
+            spuHooks.ramPtr = [this](uint32_t address) -> uint8_t *
+            {
+                uint8_t *ram = const_cast<uint8_t *>(memory.ram().data());
+                return ram + (address & static_cast<uint32_t>(memory.ram().size() - 1u));
+            };
+            // SPU2 IRQ (line 9) and SPU DMA completion go through the same pending interrupt
+            // queue as the other IOP DMA channels.
+            spuHooks.raiseInterrupt = [this](int line)
+            { pendingDmaInterrupts[line] = totalCycles; };
+            spuHooks.dmaDone = [this](int irq, uint64_t dueCycle)
+            { pendingDmaInterrupts[irq] = dueCycle; };
+            spu2::setHooks(std::move(spuHooks));
             kernel.reset();
             modules.clear();
             imports.reset();
@@ -514,6 +530,7 @@ namespace ps2x::iop::detail
         // Not that good to use exception handling for control flow but will do for now
         void servicePendingDmaInterrupts()
         {
+            spu2::advanceTo(totalCycles);
             if (servicingDmaInterrupts || pendingDmaInterrupts.empty())
                 return;
 
@@ -613,6 +630,7 @@ namespace ps2x::iop::detail
                         if (!pendingGuestCallbacks.empty())
                             nextWake = std::min(nextWake, pendingGuestCallbacks.begin()->first);
                         nextWake = timrman.nextEventCycle(nextWake);
+                        nextWake = std::min(nextWake, spu2::nextTickCycle());
                         totalCycles = std::max(totalCycles + 1u, std::min(target, nextWake));
                         continue;
                     }

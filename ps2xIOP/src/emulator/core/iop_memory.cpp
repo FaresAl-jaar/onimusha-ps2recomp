@@ -1,5 +1,6 @@
 #include <cstdio>
 #include "iop_memory.h"
+#include "../spu2/iop_spu2.h"
 
 #include <algorithm>
 #include <cstring>
@@ -13,6 +14,12 @@ namespace ps2x::iop::detail
         constexpr uint32_t kDmaStart = 1u << 24u;
         constexpr int kDmaSpu0Irq = 0x24;
         constexpr int kDmaSpu1Irq = 0x28;
+
+        // SPU2 core and global registers; everything above is the second half of the 2 MB map.
+        bool isSpu2Register(uint32_t phys)
+        {
+            return phys >= 0x1F900000u && phys < 0x1F900800u;
+        }
 
         uint32_t alignUp(uint32_t value, uint32_t alignment)
         {
@@ -48,6 +55,8 @@ namespace ps2x::iop::detail
     uint8_t IopMemory::read8(uint32_t address) const
     {
         const uint32_t phys = physicalAddress(address);
+        if (isSpu2Register(phys))
+            return static_cast<uint8_t>(spu2::read(phys & ~1u, 2) >> ((phys & 1u) * 8u));
         if (phys < RamSize)
             return m_ram[phys];
         if (phys >= ScratchBase && phys < ScratchBase + ScratchSize)
@@ -59,6 +68,8 @@ namespace ps2x::iop::detail
     uint16_t IopMemory::read16(uint32_t address) const
     {
         const uint32_t phys = physicalAddress(address);
+        if (isSpu2Register(phys))
+            return static_cast<uint16_t>(spu2::read(phys, 2));
         if (phys + 1u < RamSize)
         {
             uint16_t value;
@@ -71,6 +82,8 @@ namespace ps2x::iop::detail
     uint32_t IopMemory::read32(uint32_t address) const
     {
         const uint32_t phys = physicalAddress(address);
+        if (isSpu2Register(phys))
+            return spu2::read(phys, 4);
         if ((phys & 3u) == 0u && phys + 3u < RamSize)
         {
             uint32_t value;
@@ -116,6 +129,11 @@ namespace ps2x::iop::detail
     void IopMemory::write16(uint32_t address, uint16_t value)
     {
         const uint32_t phys = physicalAddress(address);
+        if (isSpu2Register(phys))
+        {
+            spu2::write(phys, value, 2);
+            return;
+        }
         if (phys + 1u < RamSize)
         {
             std::memcpy(m_ram.data() + phys, &value, sizeof(value));
@@ -129,6 +147,11 @@ namespace ps2x::iop::detail
     void IopMemory::write32(uint32_t address, uint32_t value)
     {
         const uint32_t phys = physicalAddress(address);
+        if (isSpu2Register(phys))
+        {
+            spu2::write(phys, value, 4);
+            return;
+        }
         if ((phys & 3u) == 0u && phys + 3u < RamSize)
         {
             std::memcpy(m_ram.data() + phys, &value, sizeof(value));
@@ -248,37 +271,24 @@ namespace ps2x::iop::detail
         }
 
         m_hardware[address] = value;
-        if ((address != kDmaSpu0Chcr && address != kDmaSpu1Chcr) || (value & kDmaStart) == 0u)
+        if (address != kDmaSpu0Chcr && address != kDmaSpu1Chcr)
             return;
+        if ((value & kDmaStart) == 0u)
+        {
+            // The driver stopped the channel: queued auto DMA data is dropped.
+            spu2::stop_dma(address == kDmaSpu1Chcr ? 1 : 0);
+            return;
+        }
 
         const bool secondCore = address == kDmaSpu1Chcr;
-        {
-            static uint32_t logCount[2] = {0, 0};
-            if (logCount[secondCore ? 1 : 0]++ < 20)
-                std::fprintf(stderr, "[iop:spu2dma] core=%d chcr=0x%x\n", secondCore ? 1 : 0, value);
-        }
         m_hardware[address] = value & ~kDmaStart;
-
-        const uint32_t statusAddress = 0x1F900344u + (secondCore ? 0x400u : 0u);
-        const uint32_t alignedStatus = statusAddress & ~3u;
-        const uint32_t shift = (statusAddress & 2u) * 8u;
-        uint32_t status = 0u;
-        if (const auto current = m_hardware.find(alignedStatus); current != m_hardware.end())
-            status = current->second;
-        status |= 0x80u << shift;
-        m_hardware[alignedStatus] = status;
-
-        const uint32_t blockControlAddress = address - sizeof(uint32_t);
-        uint32_t blockControl = 0u;
-        if (const auto current = m_hardware.find(blockControlAddress); current != m_hardware.end())
-            blockControl = current->second;
-        const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
-        const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
-        const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
-        m_dmaStart = DmaStart{
-            secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
-            std::max<uint64_t>(transferWords * 2u, 64u),
-        };
+        const uint32_t madr = m_hardware.count(address - 8u) ? m_hardware[address - 8u] : 0u;
+        const uint32_t bcr = m_hardware.count(address - 4u) ? m_hardware[address - 4u] : 0u;
+        const uint32_t wordsPerBlock = std::max<uint32_t>(bcr & 0xFFFFu, 1u);
+        const uint32_t blockCount = std::max<uint32_t>(bcr >> 16u, 1u);
+        const bool toSpu = (value & 1u) != 0u;
+        spu2::dma(secondCore ? 1 : 0, madr & 0x1FFFFFu, wordsPerBlock * blockCount, toSpu,
+                  secondCore ? kDmaSpu1Irq : kDmaSpu0Irq);
     }
 
     std::optional<IopMemory::DmaStart> IopMemory::takeDmaStart() noexcept
