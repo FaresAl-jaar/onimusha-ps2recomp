@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace ps2x::iop
 {
@@ -128,6 +129,58 @@ namespace ps2x::iop
             (void)packet;
             (void)packetSize;
             return false;
+        }
+
+        // IOP -> EE RPC: an IRX that binds to and calls a server the EE registered with sceSifRegisterRpc and serves
+        // from a thread in sceSifRpcLoop. The defaults keep hosts without an EE side source-compatible: the bind
+        // finds no server, so the IRX keeps retrying as before.
+        struct EeRpcServer
+        {
+            uint32_t serverData = 0;     // EE address of the server's t_SifRpcServerData
+            uint32_t buffer = 0;         // its receive buffer (EE address)
+            uint32_t callbackBuffer = 0; // its callback buffer (EE address)
+        };
+        virtual bool findEeRpcServer(uint32_t sid, EeRpcServer &server) const
+        {
+            (void)sid;
+            (void)server;
+            return false;
+        }
+
+        struct EeRpcCall
+        {
+            uint64_t token = 0; // passed back to IopSubsystem::completeEeRpc with the server's reply
+            uint32_t sid = 0;
+            uint32_t function = 0; // the RPC number
+            std::vector<uint8_t> send;
+            uint32_t receiveSize = 0; // bytes the IRX takes back (whole SIF DMA quadwords)
+        };
+        // Hands the call to the EE server thread. False when it cannot be delivered: the IRX call then fails.
+        virtual bool callEeRpc(EeRpcCall call)
+        {
+            (void)call;
+            return false;
+        }
+
+        // 32-byte pad state of a controller port in libpad's layout ([2..3] buttons, active low;
+        // [4..7] right and left sticks). The default reports no input.
+        virtual bool readPadState(int port, uint8_t *state, size_t size)
+        {
+            (void)port;
+            (void)state;
+            (void)size;
+            return false;
+        }
+
+        // Whether a controller is plugged into a port (0 or 1). The default: port 0 only.
+        virtual bool padConnected(int port) { return port == 0; }
+
+        // SPU2 output: interleaved 16-bit stereo frames at 48 kHz of emulated time. The default
+        // discards them.
+        virtual void submitAudio(const int16_t *frames, size_t count)
+        {
+            (void)frames;
+            (void)count;
         }
 
         virtual void log(LogLevel level, std::string_view message) = 0;

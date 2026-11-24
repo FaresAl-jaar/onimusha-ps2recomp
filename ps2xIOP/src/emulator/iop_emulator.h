@@ -23,6 +23,10 @@ namespace ps2x::iop::detail
         void reset();
         [[nodiscard]] ModuleLoadResult loadModule(std::string_view path, const void *arguments, uint32_t argumentSize);
         [[nodiscard]] ModuleLoadResult loadModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize);
+        [[nodiscard]] ModuleLoadResult loadModuleBufferFromIop(uint32_t iopAddress, const void *arguments, uint32_t argumentSize);
+        // Queues an EE -> IOP SIF command for its IOP handler; false when no handler has that id.
+        [[nodiscard]] bool sendSifCommand(uint32_t cid, const void *packet, uint32_t size);
+        void completeEeRpc(uint64_t token, const void *data, size_t size);
         [[nodiscard]] bool stopModule(int32_t moduleId, int32_t *result);
         void runEeCycles(uint64_t eeCycles) noexcept;
         [[nodiscard]] RpcResult handleRpc(const RpcRequest &request);
@@ -40,6 +44,8 @@ namespace ps2x::iop::detail
         [[nodiscard]] uint64_t instructions() const noexcept;
         [[nodiscard]] uint32_t loadedModuleCount() const noexcept;
         [[nodiscard]] uint32_t threadCount() const noexcept;
+        [[nodiscard]] std::vector<std::string> describeThreads() const;
+        [[nodiscard]] std::vector<std::string> describeSpu2() const;
         [[nodiscard]] uint32_t rpcServerCount() const noexcept;
 
     private:

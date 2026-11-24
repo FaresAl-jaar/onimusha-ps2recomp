@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -21,10 +23,21 @@ namespace ps2x::iop::detail
     void IopRpcBridge::reset()
     {
         m_servers.clear();
+        m_cmdHandlers.clear();
+        m_queueThreads.clear();
+        m_eeClients.clear();
+        m_eeCalls.clear();
+        // m_nextEeCallToken keeps counting: an EE server may still answer a call made before the reset (SC3 reboots
+        // the IOP at boot), and that reply must miss rather than match the first new call.
         m_nextDmaId = 1u;
-        // On hardware the IOP kernel brings SIF up while booting (sifman/sifcmd are
-        // resident from the boot image), long before any game module is loaded.
-        m_sifInitialized = true;
+        m_sifInitialized = false;
+        m_sregs.fill(0u);
+    }
+
+    void IopRpcBridge::setSreg(uint32_t reg, uint32_t value) noexcept
+    {
+        if (reg < m_sregs.size())
+            m_sregs[reg] = value;
     }
 
     bool IopRpcBridge::dispatchSifManImport(uint16_t ordinal, IopCpuState &cpu)
@@ -40,7 +53,9 @@ namespace ps2x::iop::detail
             m_sifInitialized = true;
             setV0(0u);
             return true;
-        case 7: // sceSifSetDma
+        case 7:  // sceSifSetDma(descriptors, count)
+        case 32: // sceSifSetDmaIntr(descriptors, count, callback, argument): the emulator calls
+                 // the completion callback (see IopEmulator's sifman dispatch)
         {
             constexpr uint32_t kDescriptorSize = 16u;
             constexpr uint32_t kMaxDescriptors = 32u;
@@ -79,8 +94,11 @@ namespace ps2x::iop::detail
                     continue;
 
                 const uint32_t size = static_cast<uint32_t>(signedSize);
-                if (!m_memory.ownsRamRange(source, size))
+                if (!m_memory.isRamRange(source, size))
                 {
+                    char message[128];
+                    std::snprintf(message, sizeof(message), "[IOP] sceSifSetDma: bad IOP source 0x%x (%u bytes)", source, size);
+                    m_host.log(LogLevel::Warning, message);
                     setV0(0u);
                     return true;
                 }
@@ -98,6 +116,10 @@ namespace ps2x::iop::detail
                 const PendingTransfer &transfer = pending[i];
                 if (!m_host.readGuest(transfer.destination, scratch.data(), transfer.size))
                 {
+                    char message[128];
+                    std::snprintf(message, sizeof(message), "[IOP] sceSifSetDma: bad EE destination 0x%x (source 0x%x, %u bytes)",
+                                  transfer.destination, transfer.source, transfer.size);
+                    m_host.log(LogLevel::Warning, message);
                     setV0(0u);
                     return true;
                 }
@@ -111,6 +133,21 @@ namespace ps2x::iop::detail
                     setV0(0u);
                     return true;
                 }
+            }
+
+            static uint32_t transferLogCount = 0;
+            for (uint32_t i = 0u; i < pendingCount; ++i)
+            {
+                if (transferLogCount < 64u || (transferLogCount % 512u) == 0u)
+                {
+                    char message[160];
+                    std::snprintf(message, sizeof(message),
+                                  "[IOP sif dma] #%u iop 0x%x -> ee 0x%x (%u bytes) ra=0x%x",
+                                  transferLogCount, pending[i].source, pending[i].destination, pending[i].size,
+                                  cpu.gpr[31]);
+                    m_host.log(LogLevel::Info, message);
+                }
+                ++transferLogCount;
             }
 
             const uint32_t dmaId = m_nextDmaId++;
@@ -133,6 +170,155 @@ namespace ps2x::iop::detail
         }
     }
 
+    // IOP -> EE RPC. The client is the sifrpc t_SifRpcClientData, the same layout as on the EE: buf +0x14, cbuf +0x18,
+    // server +0x24 (EE addresses). A bind that finds no EE server leaves server 0, the SDK's signal to retry.
+    bool IopRpcBridge::bindEeRpc(IopCpuState &cpu)
+    {
+        constexpr uint32_t kClientBuffer = 0x14u, kClientCallbackBuffer = 0x18u, kClientServer = 0x24u;
+        const uint32_t client = cpu.gpr[4];
+        const uint32_t sid = cpu.gpr[5];
+        cpu.gpr[2] = 0u;
+        IopHost::EeRpcServer server;
+        if (client == 0u || !m_memory.isRamRange(client, 0x28u) || !m_host.findEeRpcServer(sid, server))
+        {
+            static uint32_t logged = 0;
+            if (logged++ < 8u)
+            {
+                char message[128];
+                std::snprintf(message, sizeof(message), "[IOP sifcmd] sceSifBindRpc sid=0x%x: no EE server yet (client=0x%x)",
+                              sid, client);
+                m_host.log(LogLevel::Info, message);
+            }
+            return true;
+        }
+        m_memory.write32(client + kClientBuffer, server.buffer);
+        m_memory.write32(client + kClientCallbackBuffer, server.callbackBuffer);
+        m_memory.write32(client + kClientServer, server.serverData);
+        m_eeClients[client] = sid;
+        char message[128];
+        std::snprintf(message, sizeof(message), "[IOP sifcmd] sceSifBindRpc sid=0x%x -> EE server 0x%x (client=0x%x)", sid,
+                      server.serverData, client);
+        m_host.log(LogLevel::Info, message);
+        return true;
+    }
+
+    // The call goes to the host (the EE server thread serves it); the IRX caller sleeps until the reply unless the call
+    // is SIF_RPC_M_NOWAIT. The receive size is rounded up to whole quadwords, as the SIF DMA moves them.
+    bool IopRpcBridge::callEeRpc(IopCpuState &cpu)
+    {
+        constexpr uint32_t kRpcNowait = 0x1u;
+        const uint32_t client = cpu.gpr[4];
+        const uint32_t function = cpu.gpr[5];
+        const uint32_t mode = cpu.gpr[6];
+        const uint32_t send = cpu.gpr[7];
+        const uint32_t sp = cpu.gpr[29];
+        const uint32_t sendSize = m_memory.read32(sp + 16u);
+        const uint32_t receive = m_memory.read32(sp + 20u);
+        const uint32_t receiveSize = m_memory.read32(sp + 24u);
+        const uint32_t endFunction = m_memory.read32(sp + 28u);
+        const uint32_t endParam = m_memory.read32(sp + 32u);
+        const auto bound = m_eeClients.find(client);
+        if (bound == m_eeClients.end())
+        {
+            static uint32_t logged = 0;
+            if (logged++ < 8u)
+            {
+                char message[128];
+                std::snprintf(message, sizeof(message), "[IOP sifcmd] sceSifCallRpc on an unbound client 0x%x (fno=%u)",
+                              client, function);
+                m_host.log(LogLevel::Warning, message);
+            }
+            cpu.gpr[2] = static_cast<uint32_t>(-1);
+            return true;
+        }
+
+        IopHost::EeRpcCall call;
+        call.token = m_nextEeCallToken++;
+        call.sid = bound->second;
+        call.function = function;
+        if (send != 0u && sendSize != 0u && m_memory.isRamRange(send, sendSize))
+        {
+            call.send.resize(sendSize);
+            (void)m_memory.readRam(send, call.send.data(), sendSize);
+        }
+        const uint32_t transfer = receive != 0u ? (receiveSize + 15u) & ~15u : 0u;
+        call.receiveSize = transfer;
+
+        IopThread *const caller = m_kernel.currentThread();
+        // A module start cannot wait either: the EE executor that would serve the reply is the one inside LoadModule.
+        const bool canWait = caller != nullptr && caller->id != IopKernel::kModuleLoaderThreadId;
+        const bool wait = (mode & kRpcNowait) == 0u && canWait;
+        if ((mode & kRpcNowait) == 0u && !canWait)
+        {
+            // The call cannot wait, so the IRX goes on before the reply is in its receive buffer. Said every time,
+            // since the IRX reads that buffer early.
+            char message[176];
+            std::snprintf(message, sizeof(message),
+                          "[IOP sifcmd] sceSifCallRpc sid=0x%x fno=%u with WAIT outside an IOP thread or in a module "
+                          "start (ra=0x%x): it returns before the EE reply",
+                          bound->second, function, cpu.gpr[31]);
+            m_host.log(LogLevel::Warning, message);
+        }
+        EeCall pending;
+        pending.thread = wait ? caller->id : 0;
+        pending.receive = receive;
+        pending.receiveSize = transfer;
+        pending.endFunction = endFunction;
+        pending.endParam = endParam;
+        pending.gp = cpu.gpr[28];
+        const uint64_t token = call.token;
+        // Recorded first: a host that replies at once completes the call before callEeRpc returns.
+        m_eeCalls[token] = pending;
+        if (!m_host.callEeRpc(std::move(call)))
+        {
+            m_eeCalls.erase(token);
+            cpu.gpr[2] = static_cast<uint32_t>(-1);
+            return true;
+        }
+        cpu.gpr[2] = 0u;
+        // The caller waits in a delay that never expires, which only the reply ends: on the IOP sifrpc waits on its
+        // own event, so a WakeupThread aimed at the thread (it only wakes Sleep) must not end the call early.
+        if (wait && m_eeCalls.count(token) != 0u)
+            m_kernel.delayCurrentUntil(kEeRpcWaitCycle, cpu);
+        return true;
+    }
+
+    std::optional<IopRpcBridge::EndFunction> IopRpcBridge::completeEeRpc(uint64_t token, const void *data, size_t size)
+    {
+        const auto it = m_eeCalls.find(token);
+        if (it == m_eeCalls.end())
+            return std::nullopt;
+        const EeCall call = it->second;
+        m_eeCalls.erase(it);
+        if (call.receive != 0u && call.receiveSize != 0u && m_memory.isRamRange(call.receive, call.receiveSize))
+        {
+            std::vector<uint8_t> words(call.receiveSize, 0u);
+            if (data != nullptr)
+                std::memcpy(words.data(), data, std::min<size_t>(size, words.size()));
+            (void)m_memory.writeRam(call.receive, words.data(), words.size());
+        }
+        if (call.thread != 0)
+        {
+            if (IopThread *thread = m_kernel.thread(call.thread);
+                thread && thread->state == IopThreadState::Delay && thread->wakeCycle == kEeRpcWaitCycle)
+            {
+                thread->cpu.gpr[2] = 0u;
+                thread->state = IopThreadState::Ready;
+            }
+        }
+        if (call.endFunction == 0u)
+            return std::nullopt;
+        return EndFunction{call.endFunction, call.gp, call.endParam};
+    }
+
+    std::optional<IopRpcBridge::CmdHandler> IopRpcBridge::cmdHandler(uint32_t cid) const
+    {
+        const auto it = m_cmdHandlers.find(cid);
+        if (it == m_cmdHandlers.end() || it->second.function == 0u)
+            return std::nullopt;
+        return it->second;
+    }
+
     bool IopRpcBridge::dispatchSifCmdImport(uint16_t ordinal, IopCpuState &cpu)
     {
         const auto setV0 = [&](uint32_t value)
@@ -141,35 +327,42 @@ namespace ps2x::iop::detail
         };
         switch (ordinal)
         {
-        case 4: // InitCmd
-        case 5:
-        case 6:
-        case 7:
-        case 8:
-        case 9:
-        case 10:
-        case 11:
-        case 14: // InitRpc
-            setV0(0);
-            return true;
-        case 15: // sceSifBindRpc(cd, sid, mode): IOP client binding to an EE server
+        case 10: // sceSifAddCmdHandler(cid, function, data)
         {
-            // IOP modules retry until cd->server (offset 0x24) is non-NULL. EE servers
-            // are hosted by the runtime, so report the binding as established and point
-            // the server field at the client block (only checked for non-NULL).
-            const uint32_t clientData = cpu.gpr[4];
-            const uint32_t sid = cpu.gpr[5];
-            if (clientData != 0u && m_memory.ownsRamRange(clientData, 0x28u))
-            {
-                m_memory.write32(clientData + 0x04u, sid);        // hdr.rpc_id
-                m_memory.write32(clientData + 0x24u, clientData); // server
-            }
+            m_cmdHandlers[cpu.gpr[4]] = CmdHandler{cpu.gpr[5], cpu.gpr[6], cpu.gpr[28]};
+            char message[96];
+            std::snprintf(message, sizeof(message), "[IOP] SIF command handler cid=0x%x function=0x%x",
+                          cpu.gpr[4], cpu.gpr[5]);
+            m_host.log(LogLevel::Info, message);
             setV0(0);
             return true;
         }
-        case 16: // sceSifCallRpc to an EE server: not forwarded yet, completes immediately
+        case 11: // sceSifRemoveCmdHandler(cid)
+            m_cmdHandlers.erase(cpu.gpr[4]);
             setV0(0);
             return true;
+        case 6: // sceSifGetSreg(reg)
+            setV0(cpu.gpr[4] < m_sregs.size() ? m_sregs[cpu.gpr[4]] : 0u);
+            return true;
+        case 7: // sceSifSetSreg(reg, value): returns the previous value
+        {
+            const uint32_t reg = cpu.gpr[4];
+            const uint32_t previous = reg < m_sregs.size() ? m_sregs[reg] : 0u;
+            setSreg(reg, cpu.gpr[5]);
+            setV0(previous);
+            return true;
+        }
+        case 4: // InitCmd
+        case 5:
+        case 8:
+        case 9:
+        case 14: // InitRpc
+            setV0(0);
+            return true;
+        case 15: // sceSifBindRpc(client, sid, mode): an EE server
+            return bindEeRpc(cpu);
+        case 16: // sceSifCallRpc(client, fno, mode, send, ssize, recv, rsize, end, endparam)
+            return callEeRpc(cpu);
         case 12: // sceSifSendCmd
         case 13: // isceSifSendCmd
         {
@@ -184,7 +377,7 @@ namespace ps2x::iop::detail
             const int32_t signedExtraSize = static_cast<int32_t>(m_memory.read32(stackPointer + 20u));
 
             if (packetAddress == 0u || packetSize < kHeaderSize || packetSize > kMaxPacketSize ||
-                !m_memory.ownsRamRange(packetAddress, packetSize))
+                !m_memory.isRamRange(packetAddress, packetSize))
             {
                 setV0(0u);
                 return true;
@@ -202,7 +395,7 @@ namespace ps2x::iop::detail
             {
                 extraSize = static_cast<uint32_t>(signedExtraSize);
                 if (extraSource == 0u || extraDestination == 0u ||
-                    !m_memory.ownsRamRange(extraSource, extraSize) ||
+                    !m_memory.isRamRange(extraSource, extraSize) ||
                     !m_host.writeGuest(extraDestination, m_memory.ram().data() + IopMemory::physicalAddress(extraSource), extraSize))
                 {
                     setV0(0u);
@@ -251,7 +444,8 @@ namespace ps2x::iop::detail
         case 18:
             setV0(0);
             return true;
-        case 19: // SetRpcQueue
+        case 19: // SetRpcQueue(queue, thread)
+            m_queueThreads[cpu.gpr[4]] = static_cast<int>(cpu.gpr[5]);
             setV0(cpu.gpr[4]);
             return true;
         case 20:
@@ -262,9 +456,19 @@ namespace ps2x::iop::detail
             m_kernel.sleepCurrent(cpu);
             setV0(0);
             return true;
-        case 23:
-            setV0(0);
+        case 23: // sceSifGetOtherData(receiveData, eeSource, iopDestination, size, mode)
+        {
+            const uint32_t size = cpu.gpr[7];
+            bool copied = size == 0u;
+            if (!copied && size <= IopMemory::RamSize)
+            {
+                std::vector<uint8_t> data(size);
+                copied = m_host.readGuest(cpu.gpr[5], data.data(), data.size()) &&
+                         m_memory.writeRam(cpu.gpr[6], data.data(), data.size());
+            }
+            setV0(copied ? 0u : static_cast<uint32_t>(-1));
             return true;
+        }
         case 24: // RemoveRpc
         {
             const uint32_t serverData = cpu.gpr[4];
@@ -304,18 +508,44 @@ namespace ps2x::iop::detail
             const uint32_t copySize = std::min<uint32_t>(request.send.size, IopMemory::RamSize - std::min(server.buffer, IopMemory::RamSize));
             if (copySize != 0u)
             {
-                std::vector<uint8_t> payload(copySize);
-                if (m_host.readGuest(request.send.address, payload.data(), payload.size()))
-                    (void)m_memory.writeRam(server.buffer, payload.data(), payload.size());
+                if (request.sendData)
+                    (void)m_memory.writeRam(server.buffer, request.sendData, copySize);
+                else
+                {
+                    std::vector<uint8_t> payload(copySize);
+                    if (m_host.readGuest(request.send.address, payload.data(), payload.size()))
+                        (void)m_memory.writeRam(server.buffer, payload.data(), payload.size());
+                }
             }
         }
 
-        uint32_t returnPointer = executor.executeGuestFunction(server.function,
-                                                               request.function,
-                                                               server.buffer,
-                                                               request.send.size,
-                                                               0u,
-                                                               server.gp);
+        static const bool traceRpc = []
+        {
+            const char *value = std::getenv("PS2X_IOP_TRACE_RPC");
+            return value && *value == '1';
+        }();
+        if (traceRpc)
+            std::fprintf(stderr, "[iop:rpc] sid=0x%x fno=%u mode=%u send=%u recv=%u -> server 0x%x (inline)\n", request.sid,
+                         request.function, request.mode, request.send.size, request.receive.size, server.function);
+        // Run the server function as the thread that serves its queue, like sceSifRpcLoop does:
+        // 989snd's bank load records GetThreadId() and sleeps until its loader thread wakes it.
+        const auto queueThread = m_queueThreads.find(server.queue);
+        uint32_t returnPointer = queueThread != m_queueThreads.end()
+                                     ? executor.executeGuestFunctionAsThread(server.function,
+                                                                             request.function,
+                                                                             server.buffer,
+                                                                             request.send.size,
+                                                                             0u,
+                                                                             server.gp,
+                                                                             queueThread->second)
+                                     : executor.executeGuestFunction(server.function,
+                                                                     request.function,
+                                                                     server.buffer,
+                                                                     request.send.size,
+                                                                     0u,
+                                                                     server.gp);
+        if (traceRpc)
+            std::fprintf(stderr, "[iop:rpc] sid=0x%x fno=%u returned 0x%x\n", request.sid, request.function, returnPointer);
         if (returnPointer == 0u)
             returnPointer = server.buffer;
         if (request.receive.address != 0u && request.receive.size != 0u && returnPointer != 0u)
@@ -356,6 +586,15 @@ namespace ps2x::iop::detail
                 server = m_servers.erase(server);
             else
                 ++server;
+        }
+        // SIF command handlers of the unloaded module go with its servers.
+        for (auto handler = m_cmdHandlers.begin(); handler != m_cmdHandlers.end();)
+        {
+            const uint32_t function = IopMemory::physicalAddress(handler->second.function);
+            if (function >= base && function < base + size)
+                handler = m_cmdHandlers.erase(handler);
+            else
+                ++handler;
         }
     }
 

@@ -45,6 +45,7 @@ public:
                                       uint8_t *rdram = nullptr);
 
     bool readGuest(uint32_t address, void *destination, size_t size) const override;
+    void submitAudio(const int16_t *frames, size_t count) override;
     bool writeGuest(uint32_t address, const void *source, size_t size) override;
     bool zeroGuest(uint32_t address, size_t size) override;
     bool normalizeGuestAddress(uint32_t address, uint32_t &normalized) const override;

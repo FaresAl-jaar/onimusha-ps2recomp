@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -10,6 +11,9 @@
 
 namespace ps2x::iop::detail
 {
+    class IopSio2;
+    class IopSpu2;
+
     class IopMemory
     {
     public:
@@ -52,13 +56,20 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool writeRam(uint32_t address, const void *source, size_t size);
         [[nodiscard]] bool zeroRam(uint32_t address, size_t size);
         [[nodiscard]] bool ownsRamRange(uint32_t address, size_t size) const;
+        // Whole range inside IOP RAM, written or not (what a DMA can read).
+        [[nodiscard]] bool isRamRange(uint32_t address, size_t size) const;
         [[nodiscard]] bool isHardwareAddress(uint32_t address) const;
         [[nodiscard]] std::string readString(uint32_t address, size_t limit = 1024u) const;
 
+        // sysmem-like pool: first fit from the end of the relocated modules (HeapBase before any is
+        // loaded) up to HeapLimit, reusing freed blocks.
         [[nodiscard]] uint32_t allocate(uint32_t size, uint32_t alignment = 16u, std::optional<uint32_t> fixed = std::nullopt);
         [[nodiscard]] bool freeAllocation(uint32_t address);
         [[nodiscard]] uint32_t maxFreeMemory() const;
         [[nodiscard]] std::optional<Allocation> allocationContaining(uint32_t address) const;
+        [[nodiscard]] bool overlapsAllocation(uint32_t address, uint32_t size) const;
+        // End of the relocated module images: the heap may borrow memory above it.
+        void setModuleWatermark(uint32_t address) noexcept { m_moduleWatermark = std::min(address, HeapBase); }
 
         [[nodiscard]] uint32_t interruptStatus() const noexcept { return m_interruptStatus; }
         [[nodiscard]] uint32_t interruptMask() const noexcept { return m_interruptMask; }
@@ -68,6 +79,12 @@ namespace ps2x::iop::detail
         void setInterruptControl(uint32_t value) noexcept { m_interruptControl = value & 1u; }
 
         [[nodiscard]] std::optional<DmaStart> takeDmaStart() noexcept;
+        // Raise irq after delayCycles (delivered through the same path as DMA completions).
+        void requestInterrupt(int irq, uint64_t delayCycles) noexcept { m_dmaStart = DmaStart{irq, delayCycles}; }
+        // SIO2 controller registers are forwarded to this device (owned by the emulator).
+        void setSio2(IopSio2 *sio2) noexcept { m_sio2 = sio2; }
+        // SPU2 registers (16-bit) and DMA channels 4 and 7 are forwarded to this device.
+        void setSpu2(IopSpu2 *spu2) noexcept { m_spu2 = spu2; }
         [[nodiscard]] std::span<const uint8_t> ram() const noexcept { return m_ram; }
 
         [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
@@ -76,16 +93,20 @@ namespace ps2x::iop::detail
         [[nodiscard]] uint32_t readHardware32(uint32_t address) const;
         void writeHardware32(uint32_t address, uint32_t value);
         void markOwned(uint32_t address, size_t size);
+        [[nodiscard]] uint32_t findFree(uint32_t begin, uint32_t end, uint32_t size, uint32_t alignment) const;
+        [[nodiscard]] uint32_t largestGap(uint32_t begin, uint32_t end) const;
 
         std::vector<uint8_t> m_ram;
         std::vector<uint8_t> m_owned;
         std::vector<uint8_t> m_scratch;
         std::unordered_map<uint32_t, uint32_t> m_hardware;
         std::vector<Allocation> m_allocations;
-        uint32_t m_heapCursor = HeapBase;
+        uint32_t m_moduleWatermark = HeapBase;
         uint32_t m_interruptStatus = 0;
         uint32_t m_interruptMask = 0;
         uint32_t m_interruptControl = 1;
         std::optional<DmaStart> m_dmaStart;
+        IopSio2 *m_sio2 = nullptr;
+        IopSpu2 *m_spu2 = nullptr;
     };
 }

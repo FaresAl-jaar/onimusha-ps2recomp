@@ -1,3 +1,7 @@
+#include <deque>
+#include <mutex>
+#include <algorithm>
+#include "ps2x/iop/spu2_output.h"
 #include "ps2_iop_host.h"
 
 #include "ps2_runtime.h"
@@ -529,4 +533,38 @@ void PS2IopHostAdapter::log(ps2x::iop::LogLevel level, std::string_view message)
         prefix = "[ps2xIOP:error]";
     }
     std::cerr << prefix << ' ' << message << std::endl;
+}
+
+// SPU2 output of the IOP, buffered for the host audio stream (ps2x/iop/spu2_output.h).
+namespace
+{
+    std::mutex g_spu2OutputMutex;
+    std::deque<int16_t> g_spu2Output;
+    constexpr size_t kSpu2OutputMaxFrames = 48000u / 2u; // half a second: older samples go
+}
+
+void PS2IopHostAdapter::submitAudio(const int16_t *frames, size_t count)
+{
+    std::lock_guard<std::mutex> lock(g_spu2OutputMutex);
+    g_spu2Output.insert(g_spu2Output.end(), frames, frames + count * 2u);
+    if (g_spu2Output.size() > kSpu2OutputMaxFrames * 2u)
+        g_spu2Output.erase(g_spu2Output.begin(), g_spu2Output.begin() + static_cast<std::ptrdiff_t>(g_spu2Output.size() - kSpu2OutputMaxFrames * 2u));
+}
+
+namespace ps2x::iop
+{
+    std::size_t spu2ReadOutput(std::int16_t *out, std::size_t frames)
+    {
+        std::lock_guard<std::mutex> lock(g_spu2OutputMutex);
+        const std::size_t n = std::min(frames, g_spu2Output.size() / 2u);
+        std::copy(g_spu2Output.begin(), g_spu2Output.begin() + static_cast<std::ptrdiff_t>(n * 2u), out);
+        g_spu2Output.erase(g_spu2Output.begin(), g_spu2Output.begin() + static_cast<std::ptrdiff_t>(n * 2u));
+        return n;
+    }
+
+    std::size_t spu2BufferedFrames()
+    {
+        std::lock_guard<std::mutex> lock(g_spu2OutputMutex);
+        return g_spu2Output.size() / 2u;
+    }
 }

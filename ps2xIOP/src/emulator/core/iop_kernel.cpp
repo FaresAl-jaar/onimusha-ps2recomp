@@ -1,9 +1,22 @@
 #include "iop_kernel.h"
 
+#include <cstdio>
+#include <iterator>
+
 #include "iop_memory.h"
 #include "../iop_emulator_const.h"
 
 #include <algorithm>
+
+static bool iopTraceRpc()
+{
+    static const bool enabled = []
+    {
+        const char *value = std::getenv("PS2X_IOP_TRACE_RPC");
+        return value && *value == '1';
+    }();
+    return enabled;
+}
 
 namespace ps2x::iop::detail
 {
@@ -16,6 +29,24 @@ namespace ps2x::iop::detail
             const uint32_t mask = alignment - 1u;
             return (value + mask) & ~mask;
         }
+    }
+
+    std::vector<std::string> IopKernel::describeThreads() const
+    {
+        static constexpr const char *kStates[] = {"dormant", "ready", "running", "sleep", "delay",
+                                                  "sema", "evflag", "suspended", "dead"};
+        std::vector<std::string> lines;
+        for (const auto &[id, thread] : m_threads)
+        {
+            const auto state = static_cast<size_t>(thread.state);
+            char line[160];
+            std::snprintf(line, sizeof(line), "iop thread %d %s pc=0x%x ra=0x%x entry=0x%x prio=%u wait=%d bits=0x%x wake=%llu",
+                          id, state < std::size(kStates) ? kStates[state] : "?", thread.cpu.pc, thread.cpu.gpr[31],
+                          thread.entry, thread.priority, thread.waitId, thread.waitBits,
+                          static_cast<unsigned long long>(thread.wakeCycle));
+            lines.emplace_back(line);
+        }
+        return lines;
     }
 
     IopKernel::IopKernel(IopMemory &memory) noexcept
@@ -32,6 +63,7 @@ namespace ps2x::iop::detail
         m_nextSemaphoreId = 1;
         m_nextEventFlagId = 1;
         m_currentThread = nullptr;
+        m_slicedThread = 0;
     }
 
     bool IopKernel::dispatchThreadImport(uint16_t ordinal, IopCpuState &cpu, uint64_t currentCycle)
@@ -408,29 +440,19 @@ namespace ps2x::iop::detail
             }
             else if (ordinal == 9)
                 setV0(-419);
-            else if (m_currentThread != nullptr)
+            else
             {
-                m_currentThread->state = IopThreadState::Semaphore;
-                m_currentThread->waitId = id;
-                cpu.yielded = true;
-                setV0(0);
-            }
-            else if (pumpUntil([this, id]() {
-                         const auto sema = m_semaphores.find(id);
-                         return sema == m_semaphores.end() || sema->second.current > 0;
-                     }))
-            {
-                const auto sema = m_semaphores.find(id);
-                if (sema != m_semaphores.end())
+                if (iopTraceRpc())
+                    std::fprintf(stderr, "[iop:sema] WaitSema(%d) would block: current thread %d pc=0x%x ra=0x%x\n", id,
+                                 m_currentThread ? m_currentThread->id : -1, cpu.pc, cpu.gpr[31]);
+                if (m_currentThread != nullptr)
                 {
-                    --sema->second.current;
+                    m_currentThread->state = IopThreadState::Semaphore;
+                    m_currentThread->waitId = id;
+                    cpu.yielded = true;
                     setV0(0);
                 }
-                else
-                    setV0(-1);
             }
-            else
-                setV0(-419);
             return true;
         }
         case 11:
@@ -634,24 +656,7 @@ namespace ps2x::iop::detail
                 cpu.yielded = true;
             }
             else
-            {
-                const int id = event->second.id;
-                const bool satisfied = pumpUntil([this, id, bits, mode]() {
-                    const auto flag = m_eventFlags.find(id);
-                    return flag == m_eventFlags.end() || eventSatisfied(flag->second, bits, mode);
-                });
-                const auto flag = m_eventFlags.find(id);
-                if (satisfied && flag != m_eventFlags.end())
-                {
-                    if (cpu.gpr[7] != 0u)
-                        m_memory.write32(cpu.gpr[7], flag->second.bits);
-                    if ((mode & 0x10u) != 0u)
-                        flag->second.bits = 0u;
-                    setV0(0);
-                }
-                else
-                    setV0(-418);
-            }
+                setV0(-418);
             return true;
         }
         case 13:
@@ -685,23 +690,6 @@ namespace ps2x::iop::detail
         }
     }
 
-    bool IopKernel::pumpUntil(const std::function<bool()> &condition)
-    {
-        if (condition())
-            return true;
-        if (!m_syncWaitPump)
-            return false;
-        // Bounded so a wait that nothing will ever satisfy cannot hang the EE.
-        for (uint32_t step = 0; step < 20000u; ++step)
-        {
-            if (!m_syncWaitPump())
-                return false;
-            if (condition())
-                return true;
-        }
-        return false;
-    }
-
     void IopKernel::sleepCurrent(IopCpuState &cpu)
     {
         if (m_currentThread == nullptr)
@@ -719,31 +707,64 @@ namespace ps2x::iop::detail
         cpu.yielded = true;
     }
 
-    IopThread *IopKernel::beginNextReady(uint64_t currentCycle)
+    bool IopKernel::runsBefore(const IopThread &thread, const IopThread &other) const noexcept
     {
-        for (auto &[id, thread] : m_threads)
-        {
-            if (thread.state == IopThreadState::Delay && thread.wakeCycle <= currentCycle)
-                thread.state = IopThreadState::Ready;
-        }
+        if (thread.priority != other.priority)
+            return thread.priority < other.priority;
+        if (other.id == m_slicedThread)
+            return false;
+        return thread.id == m_slicedThread || thread.id < other.id;
+    }
 
-        IopThread *next = nullptr;
+    IopThread *IopKernel::readyAtOrAbove(uint32_t priority, int excluded) noexcept
+    {
+        IopThread *best = nullptr;
         for (auto &[id, thread] : m_threads)
         {
+            if (id == excluded || thread.state != IopThreadState::Ready || thread.priority > priority)
+                continue;
+            if (best == nullptr || runsBefore(thread, *best))
+                best = &thread;
+        }
+        return best;
+    }
+
+    IopThread *IopKernel::beginNextReady(uint64_t currentCycle, uint64_t *nextDelayWake)
+    {
+        // One pass: wake due delays, pick the best ready thread, and note the earliest pending wake.
+        IopThread *next = nullptr;
+        uint64_t earliestWake = UINT64_MAX;
+        for (auto &[id, thread] : m_threads)
+        {
+            if (thread.state == IopThreadState::Delay)
+            {
+                if (thread.wakeCycle > currentCycle)
+                {
+                    earliestWake = std::min(earliestWake, thread.wakeCycle);
+                    continue;
+                }
+                thread.state = IopThreadState::Ready;
+            }
             if (thread.state != IopThreadState::Ready)
                 continue;
-            if (next == nullptr || thread.priority < next->priority ||
-                (thread.priority == next->priority && thread.id < next->id))
+            if (next == nullptr || runsBefore(thread, *next))
                 next = &thread;
         }
+        if (nextDelayWake)
+            *nextDelayWake = earliestWake;
         if (next == nullptr)
             return nullptr;
 
-        m_currentThread = next;
-        next->state = IopThreadState::Running;
-        next->cpu.stopped = false;
-        next->cpu.yielded = false;
+        beginThread(*next);
         return next;
+    }
+
+    void IopKernel::beginThread(IopThread &thread) noexcept
+    {
+        m_currentThread = &thread;
+        thread.state = IopThreadState::Running;
+        thread.cpu.stopped = false;
+        thread.cpu.yielded = false;
     }
 
     uint64_t IopKernel::nextWakeCycle(uint64_t fallback) const
@@ -759,12 +780,31 @@ namespace ps2x::iop::detail
 
     void IopKernel::endTimeslice(IopThread &thread, uint32_t returnSentinel)
     {
+        m_slicedThread = 0;
         if (thread.cpu.pc == returnSentinel || thread.cpu.stopped)
             thread.state = IopThreadState::Dormant;
         else if (thread.state == IopThreadState::Running)
+        {
             thread.state = IopThreadState::Ready;
+            if (!thread.cpu.yielded)
+                m_slicedThread = thread.id;
+        }
         m_currentThread = nullptr;
         cleanupDeadThreads();
+    }
+
+    IopThread &IopKernel::hostThread(int id, uint32_t priority)
+    {
+        auto it = m_threads.find(id);
+        if (it == m_threads.end())
+        {
+            IopThread thread;
+            thread.id = id;
+            thread.priority = priority;
+            thread.initialPriority = priority;
+            it = m_threads.emplace(id, std::move(thread)).first;
+        }
+        return it->second;
     }
 
     void IopKernel::cleanupDeadThreads()

@@ -4,7 +4,10 @@
 #include "emulator/imports/iop_cdvd.h"
 #include "emulator/imports/iop_imports.h"
 #include "emulator/imports/iop_loadcore.h"
+#include "emulator/imports/iop_sysclib.h"
 #include "emulator/imports/iop_timrman.h"
+#include "emulator/imports/iop_vblank.h"
+#include "emulator/iop_emulator_const.h"
 #include "emulator/services/iop_rpc.h"
 #include "ps2x/iop/iop_host.h"
 
@@ -326,12 +329,117 @@ namespace
                expect(executor.lastGp == 0x89AB0u, "timer callback lost the registering module GP") &&
                expect(timrman.nextEventCycle(1000u) == 300u, "timer callback return did not rearm compare");
     }
+
+    // RegisterVblankHandler: handlers run at each VBlank start with their argument and GP (Sony's
+    // sound drivers wake their streaming threads this way); returning 0 releases them.
+    bool testSysclibCtypeFlags()
+    {
+        IopMemory memory;
+        IopSysclib sysclib(memory);
+        IopCpuState cpu{};
+        const auto flags = [&](char c)
+        {
+            cpu.gpr[4] = static_cast<uint8_t>(c);
+            cpu.gpr[2] = 0xFFFFFFFFu;
+            return sysclib.dispatchImport(8u, cpu) ? cpu.gpr[2] : 0xFFFFFFFFu;
+        };
+        return expect(flags('2') == 0x44u, "look_ctype_table: digit") &&
+               expect(flags('a') == 0x42u, "look_ctype_table: lower hex letter") &&
+               expect(flags('Z') == 0x01u, "look_ctype_table: upper letter") &&
+               expect(flags(' ') == 0x88u, "look_ctype_table: blank") &&
+               expect(flags('=') == 0x10u, "look_ctype_table: punctuation");
+    }
+
+    // sprintf/vsprintf format their varargs (MIPS o32: a2, a3, then the stack from sp + 16; vsprintf reads
+    // the va_list). EA's AUDIOPF builds every disc path with sprintf("\\%s\\%s.%s;1", dir, name, ext).
+    bool testSysclibSprintf()
+    {
+        IopMemory memory;
+        IopSysclib sysclib(memory);
+        IopCpuState cpu{};
+        const auto put = [&](uint32_t address, const std::string &text)
+        { return memory.writeRam(address, text.c_str(), text.size() + 1u); };
+        const auto putWord = [&](uint32_t address, uint32_t value)
+        { return memory.writeRam(address, &value, sizeof(value)); };
+        if (!put(0x10000u, "\\%s\\%s.%s;1") || !put(0x10100u, "DATA\\GAME") || !put(0x10200u, "LOADONCE") ||
+            !put(0x10300u, "SCP") || !putWord(0x20010u, 0x10300u))
+            return expect(false, "test setup failed");
+
+        cpu.gpr[4] = 0x11000u;
+        cpu.gpr[5] = 0x10000u;
+        cpu.gpr[6] = 0x10100u;
+        cpu.gpr[7] = 0x10200u;
+        cpu.gpr[29] = 0x20000u;
+        if (!expect(sysclib.dispatchImport(19u, cpu), "sprintf was not handled") ||
+            !expect(memory.readString(0x11000u) == "\\DATA\\GAME\\LOADONCE.SCP;1", "sprintf did not format its varargs") ||
+            !expect(cpu.gpr[2] == 25u, "sprintf did not return the length"))
+            return false;
+
+        if (!put(0x10400u, "%d|%5x|%-3c|%08X|%%|%.2s") || !putWord(0x30000u, static_cast<uint32_t>(-12)) ||
+            !putWord(0x30004u, 0xABu) || !putWord(0x30008u, 'q') || !putWord(0x3000Cu, 0xBEEFu) ||
+            !putWord(0x30010u, 0x10300u))
+            return expect(false, "test setup failed");
+        cpu.gpr[4] = 0x12000u;
+        cpu.gpr[5] = 0x10400u;
+        cpu.gpr[6] = 0x30000u;
+        return expect(sysclib.dispatchImport(42u, cpu), "vsprintf was not handled") &&
+               expect(memory.readString(0x12000u) == "-12|   ab|q  |0000BEEF|%|SC", "vsprintf did not read its va_list");
+    }
+
+    bool testVblankHandlers()
+    {
+        IopMemory memory;
+        IopKernel kernel(memory);
+        IopVblank vblank(kernel);
+        IopCpuState cpu{};
+
+        cpu.gpr[4] = 0u; // VBlank start
+        cpu.gpr[5] = 64u;
+        cpu.gpr[6] = 0x12340u;
+        cpu.gpr[7] = 0x45670u;
+        cpu.gpr[28] = 0x89AB0u;
+        if (!expect(vblank.dispatchImport(8u, cpu, 100u), "RegisterVblankHandler was not handled") ||
+            !expect(cpu.gpr[2] == 0u, "RegisterVblankHandler failed") ||
+            !expect(vblank.dispatchImport(8u, cpu, 100u) && static_cast<int32_t>(cpu.gpr[2]) == -104,
+                    "registering the same handler twice did not fail") ||
+            !expect(vblank.nextEventCycle(UINT64_MAX) == kVblankPeriodCycles, "the first VBlank is not the next field"))
+            return false;
+
+        RecordingExecutor executor;
+        executor.callbackResult = 1u;
+        vblank.serviceDue(kVblankPeriodCycles - 1u, executor);
+        if (!expect(executor.calls == 0u, "VBlank handler ran before the VBlank"))
+            return false;
+        vblank.serviceDue(kVblankPeriodCycles, executor);
+        if (!expect(executor.calls == 1u, "VBlank handler did not run") ||
+            !expect(executor.lastAddress == 0x12340u && executor.lastArgument == 0x45670u && executor.lastGp == 0x89AB0u,
+                    "VBlank handler called with the wrong function, argument or GP") ||
+            !expect(vblank.nextEventCycle(UINT64_MAX) == 2u * kVblankPeriodCycles, "VBlank handler was not rearmed"))
+            return false;
+
+        // Several fields late: one call, then the next field.
+        vblank.serviceDue(5u * kVblankPeriodCycles + 10u, executor);
+        if (!expect(executor.calls == 2u, "a late VBlank was delivered more than once") ||
+            !expect(vblank.nextEventCycle(UINT64_MAX) == 6u * kVblankPeriodCycles, "a late VBlank did not resync"))
+            return false;
+
+        executor.callbackResult = 0u;
+        vblank.serviceDue(6u * kVblankPeriodCycles, executor);
+        if (!expect(executor.calls == 3u, "VBlank handler did not run") ||
+            !expect(vblank.nextEventCycle(UINT64_MAX) == UINT64_MAX, "a handler returning 0 stayed registered"))
+            return false;
+
+        cpu.gpr[4] = 1u; // VBlank end
+        cpu.gpr[5] = 0x12340u;
+        return expect(vblank.dispatchImport(9u, cpu, 0u) && static_cast<int32_t>(cpu.gpr[2]) == -105,
+                      "releasing an unknown handler did not fail");
+    }
 }
 
 int main()
 {
     if (!testLoadcoreRebootLibraryMode() || !testCdvdSpecialControl() || !testCdvdSearchFile() ||
-        !testTimrmanPeriodicCallback())
+        !testTimrmanPeriodicCallback() || !testVblankHandlers() || !testSysclibCtypeFlags() || !testSysclibSprintf())
         return 1;
     std::cout << "ps2xIOP import tests passed\n";
     return 0;

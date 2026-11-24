@@ -24,12 +24,23 @@ namespace ps2x::iop
         void reset();
 
         [[nodiscard]] ModuleLoadResult loadModule(std::string_view path, const void *arguments = nullptr, uint32_t argumentSize = 0);
+        // loadModuleBuffer reads the IRX image from EE memory; loadModuleBufferFromIop from IOP RAM,
+        // where sceSifLoadModuleBuffer expects it (allocated with sceSifAllocIopHeap, filled by SIF DMA).
         [[nodiscard]] ModuleLoadResult loadModuleBuffer(uint32_t guestAddress, const void *arguments = nullptr, uint32_t argumentSize = 0);
+        [[nodiscard]] ModuleLoadResult loadModuleBufferFromIop(uint32_t iopAddress, const void *arguments = nullptr, uint32_t argumentSize = 0);
+        // EE -> IOP SIF command (EE sceSifSendCmd). The packet header is already filled; extra data
+        // must already be in IOP RAM. Handlers run during the next IOP time slice.
+        [[nodiscard]] bool sendSifCommand(uint32_t cid, const void *packet, uint32_t size);
+        // The EE server's reply to an IOP -> EE RPC (IopHost::callEeRpc): copied to the IRX's receive buffer, then its
+        // caller resumes and its end function runs. Takes the IOP's state: call it where the IOP is not running.
+        void completeEeRpc(uint64_t token, const void *data, size_t size);
         [[nodiscard]] bool stopModule(int32_t moduleId, int32_t *result = nullptr);
         void runEeCycles(uint64_t eeCycles) noexcept;
 
         [[nodiscard]] RpcAbi selectRpcAbi(const RpcAbiRequest &request) const;
         [[nodiscard]] bool canBindRpc(uint32_t sid) const noexcept;
+        // True when an IOP module registered sid (the RPC runs IOP code rather than an HLE service).
+        [[nodiscard]] bool emulatesRpc(uint32_t sid) const noexcept;
         [[nodiscard]] RpcResult handleRpc(const RpcRequest &request);
         void onSifTransfer(const SifTransfer &transfer);
 

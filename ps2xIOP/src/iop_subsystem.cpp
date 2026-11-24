@@ -150,6 +150,21 @@ namespace ps2x::iop
         return m_impl->emulator.loadModuleBuffer(guestAddress, arguments, argumentSize);
     }
 
+    ModuleLoadResult IopSubsystem::loadModuleBufferFromIop(uint32_t iopAddress, const void *arguments, uint32_t argumentSize)
+    {
+        return m_impl->emulator.loadModuleBufferFromIop(iopAddress, arguments, argumentSize);
+    }
+
+    bool IopSubsystem::sendSifCommand(uint32_t cid, const void *packet, uint32_t size)
+    {
+        return m_impl->emulator.sendSifCommand(cid, packet, size);
+    }
+
+    void IopSubsystem::completeEeRpc(uint64_t token, const void *data, size_t size)
+    {
+        m_impl->emulator.completeEeRpc(token, data, size);
+    }
+
     bool IopSubsystem::stopModule(int32_t moduleId, int32_t *result)
     {
         if (m_impl->moduleManager.stopHle(moduleId, result))
@@ -191,6 +206,11 @@ namespace ps2x::iop
         {
             return true;
         }
+        return m_impl->emulator.hasRpcServer(sid);
+    }
+
+    bool IopSubsystem::emulatesRpc(uint32_t sid) const noexcept
+    {
         return m_impl->emulator.hasRpcServer(sid);
     }
 
@@ -262,6 +282,10 @@ namespace ps2x::iop
         {
             snapshot.diagnostics.push_back(m_impl->lastError);
         }
+        for (std::string &line : m_impl->emulator.describeThreads())
+            snapshot.diagnostics.push_back(std::move(line));
+        for (std::string &line : m_impl->emulator.describeSpu2())
+            snapshot.diagnostics.push_back(std::move(line));
 
         for (const auto &service : m_impl->coreServices)
         {
