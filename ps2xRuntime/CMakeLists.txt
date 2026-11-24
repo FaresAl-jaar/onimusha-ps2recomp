@@ -610,3 +610,11 @@ endif()
 install(DIRECTORY include/
     DESTINATION include
 )
+
+# Optimisation for the runtime libraries only (the generated runner keeps the build type flags,
+# its 11k files take far too long at -O2). Example: -DPS2X_LIB_OPT_FLAGS="-O2"
+set(PS2X_LIB_OPT_FLAGS "" CACHE STRING "Extra compile options for ps2_runtime")
+if(PS2X_LIB_OPT_FLAGS)
+    separate_arguments(_ps2x_lib_opt UNIX_COMMAND "${PS2X_LIB_OPT_FLAGS}")
+    target_compile_options(ps2_runtime PRIVATE ${_ps2x_lib_opt})
+endif()
