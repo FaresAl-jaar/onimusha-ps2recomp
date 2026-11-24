@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <string>
 #include <cstdio>
 #include "iop_emulator.h"
@@ -527,11 +528,56 @@ namespace ps2x::iop::detail
             return callFunction(address, a0, a1, a2, a3, gp, instructionBudget);
         }
 
+        // An RPC server's thread only gets the CPU once the Ready threads at its priority or above have blocked:
+        // no IOP thread preempts one of equal or higher priority. Run those first (bounded), so the server does
+        // not run in the middle of what they were doing when their slice ended (TheBozos/PS2Recomp 9dc213a).
+        void runThreadsAhead(int threadId) override
+        {
+            if (callDepth != 0u || kernel.currentThread() != nullptr)
+                return; // called from inside IOP code: nothing to reorder
+            const IopThread *owner = kernel.findThread(threadId);
+            if (!owner)
+                return;
+            const uint32_t priority = owner->priority;
+            constexpr uint32_t kMaxSlicesAhead = 4096u;
+            static uint32_t reported = 0u;
+            for (uint32_t slices = 0; slices < kMaxSlicesAhead; ++slices)
+            {
+                IopThread *ahead = kernel.readyAtOrAbove(priority, threadId);
+                if (!ahead)
+                    return;
+                if (slices == 0u && reported < 8u)
+                {
+                    ++reported;
+                    std::fprintf(stderr, "[iop:rpc-ahead] thread %d (priority %u) runs before the server thread %d (priority %u)\n",
+                                 ahead->id, ahead->priority, threadId, priority);
+                }
+                kernel.beginThread(*ahead);
+                const uint64_t before = totalCycles;
+                runCpu(ahead->cpu, kDefaultSlice);
+                kernel.endTimeslice(*ahead, kThreadReturnSentinel);
+                if (totalCycles == before)
+                    ++totalCycles;
+            }
+        }
+
+        // While a thread has interrupts suspended (CpuSuspendIntr wrote I_CTRL 0) the IOP takes no interrupt
+        // and switches no thread: the section is atomic on hardware. PS2X_IOP_INTR_MASK=0 turns this off.
+        [[nodiscard]] bool interruptsMasked() const
+        {
+            static const bool on = []
+            {
+                const char *v = std::getenv("PS2X_IOP_INTR_MASK");
+                return !(v && *v == '0');
+            }();
+            return on && memory.interruptControl() == 0u;
+        }
+
         // Not that good to use exception handling for control flow but will do for now
         void servicePendingDmaInterrupts()
         {
             spu2::advanceTo(totalCycles);
-            if (servicingDmaInterrupts || pendingDmaInterrupts.empty())
+            if (servicingDmaInterrupts || pendingDmaInterrupts.empty() || interruptsMasked())
                 return;
 
             servicingDmaInterrupts = true;
@@ -619,8 +665,11 @@ namespace ps2x::iop::detail
                 while (totalCycles < target)
                 {
                     servicePendingDmaInterrupts();
-                    servicePendingGuestCallbacks();
-                    timrman.serviceDue(totalCycles, *this);
+                    if (!interruptsMasked())
+                    {
+                        servicePendingGuestCallbacks();
+                        timrman.serviceDue(totalCycles, *this);
+                    }
                     IopThread *next = kernel.beginNextReady(totalCycles);
                     if (!next)
                     {
@@ -636,6 +685,11 @@ namespace ps2x::iop::detail
                     }
                     const uint64_t before = totalCycles;
                     runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
+                    // A slice that ends inside a CpuSuspendIntr section continues the same thread (bounded).
+                    for (uint32_t extra = 0; extra < 256u && interruptsMasked() && next->state == IopThreadState::Running &&
+                                             !next->cpu.stopped && !next->cpu.yielded && next->cpu.pc != kThreadReturnSentinel;
+                         ++extra)
+                        runCpu(next->cpu, kDefaultSlice);
                     kernel.endTimeslice(*next, kThreadReturnSentinel);
                     if (totalCycles == before)
                         ++totalCycles;

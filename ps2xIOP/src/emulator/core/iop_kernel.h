@@ -62,6 +62,12 @@ namespace ps2x::iop::detail
         void delayCurrentUntil(uint64_t wakeCycle, IopCpuState &cpu);
 
         [[nodiscard]] IopThread *beginNextReady(uint64_t currentCycle);
+        // The best Ready thread at `priority` or above (numerically at most), `excluded` aside: one the IOP
+        // runs before a thread of that priority (no thread preempts one of equal or higher priority).
+        [[nodiscard]] IopThread *readyAtOrAbove(uint32_t priority, int excluded) noexcept;
+        void beginThread(IopThread &thread) noexcept;
+        [[nodiscard]] IopThread *findThread(int id) noexcept;
+        [[nodiscard]] IopThread *currentThread() const noexcept { return m_currentThread; }
         [[nodiscard]] uint64_t nextWakeCycle(uint64_t fallback) const;
         void endTimeslice(IopThread &thread, uint32_t returnSentinel);
         void cleanupDeadThreads();

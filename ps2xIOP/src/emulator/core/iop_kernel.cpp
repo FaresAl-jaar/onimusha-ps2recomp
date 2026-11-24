@@ -746,6 +746,33 @@ namespace ps2x::iop::detail
         return next;
     }
 
+    IopThread *IopKernel::readyAtOrAbove(uint32_t priority, int excluded) noexcept
+    {
+        IopThread *best = nullptr;
+        for (auto &[id, thread] : m_threads)
+        {
+            if (id == excluded || thread.state != IopThreadState::Ready || thread.priority > priority)
+                continue;
+            if (best == nullptr || thread.priority < best->priority || (thread.priority == best->priority && id < best->id))
+                best = &thread;
+        }
+        return best;
+    }
+
+    void IopKernel::beginThread(IopThread &thread) noexcept
+    {
+        m_currentThread = &thread;
+        thread.state = IopThreadState::Running;
+        thread.cpu.stopped = false;
+        thread.cpu.yielded = false;
+    }
+
+    IopThread *IopKernel::findThread(int id) noexcept
+    {
+        const auto it = m_threads.find(id);
+        return it == m_threads.end() ? nullptr : &it->second;
+    }
+
     uint64_t IopKernel::nextWakeCycle(uint64_t fallback) const
     {
         uint64_t nextWake = fallback;

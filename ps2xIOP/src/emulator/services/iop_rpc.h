@@ -38,6 +38,9 @@ namespace ps2x::iop::detail
         {
             return executeGuestFunction(address, a0, a1, a2, a3, gp);
         }
+        // Before an RPC server runs inline for the EE: let the IOP run what it would run before the server's
+        // thread gets the CPU. threadId is the server thread (sceSifRpcLoop), 0 when unknown.
+        virtual void runThreadsAhead(int threadId) { (void)threadId; }
     };
 
     class IopRpcBridge
@@ -67,6 +70,7 @@ namespace ps2x::iop::detail
             uint32_t callbackBuffer = 0;
             uint32_t queue = 0;
         };
+        std::unordered_map<uint32_t, int> m_queueThreads; // rpc queue -> server thread
 
         IopHost &m_host;
         IopMemory &m_memory;
