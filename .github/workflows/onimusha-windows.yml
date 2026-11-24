@@ -25,6 +25,12 @@ jobs:
         with:
           arch: x64
 
+      - name: Build launcher
+        shell: cmd
+        run: |
+          cmake -S launcher -B build-launcher -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build-launcher --target OnimushaLauncher
+
       - name: Configure game
         shell: cmd
         run: >
@@ -38,12 +44,6 @@ jobs:
       - name: Build game
         shell: cmd
         run: cmake --build build --target ps2EntryRunner --parallel 4
-
-      - name: Build launcher
-        shell: cmd
-        run: |
-          cmake -S launcher -B build-launcher -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-          cmake --build build-launcher --target OnimushaLauncher
 
       - name: Package
         shell: pwsh
