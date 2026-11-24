@@ -30,7 +30,16 @@ Danach startet das Spiel das Sofdec Eröffnungsvideo \IMAGE\6\66. und bleibt bis
    0x12E998) holt so ihr 64 Bit Produkt; mit dem Fehler kam 997376 * 0.8 = 0 heraus. Dadurch war die
    Mindestlesegröße des Sofdec Streams 0 und es wurde nie von der Disc gelesen.
    ACHTUNG: diese Header Änderung baut alle Runner Dateien neu (bei mir ca. 30 Minuten).
-6. Debug Hilfen: `PS2X_FUNC_HIST=<vsyncs>` (meistgerufene Funktionen pro Fenster, `PS2X_FUNC_HIST_TOP`),
+6. libmpeg läuft jetzt als rekompilierter Spielcode über unsere IPU statt über die fremde HLE: die 11
+   sceMpeg Einträge sind aus `stubs` entfernt (`onimusha/config_mpeg.toml`, `onimusha/funcs_mpeg.csv`
+   mit fünf zusätzlichen Funktionsgrenzen: 0x10B948 sceMpegAddBs, 0x10BAA8, 0x10BAB8, 0x10BAC8, 0x10BAE0).
+   Die fünf neuen Funktionen stehen im Runner am Ende von sub_0010BA28_0x10ba28.cpp, damit die Unity
+   Batches gleich bleiben.
+7. Recompiler: BLTZ/BGEZ/BLEZ/BGTZ (auch L und AL Varianten) vergleichen jetzt alle 64 Bit
+   (`GPR_S64`), vorher nur die unteren 32. libmpeg liest IPU_CMD mit `ld` und prüft BUSY in Bit 63;
+   mit dem 32 Bit Vergleich galt ein FDEC Ergebnis wie 0x84020204 als "beschäftigt" und das Video hing.
+   Im Runner per sed nachgezogen (3272 Stellen), daher kompletter Rebuild.
+8. Debug Hilfen: `PS2X_FUNC_HIST=<vsyncs>` (meistgerufene Funktionen pro Fenster, `PS2X_FUNC_HIST_TOP`),
    `PS2X_CD_LOG_FLOOR=<hex lbn>` und `PS2X_CD_LOG_MAX=<n>` für das CD Lese Log, `PS2X_DUMP_RAM`.
 
 ## Wo Sofdec gerade steht (für Codex)
