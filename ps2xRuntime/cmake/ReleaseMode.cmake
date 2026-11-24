@@ -10,7 +10,7 @@ function(EnableFastReleaseMode TargetName)
                 /O2 # speed
                 /Ob2 # inline aggressively
                 /Oi # intrinsics
-                /GL # whole program opt
+                $<$<NOT:$<BOOL:${PS2X_NO_LTO}>>:/GL> # whole program opt (off with PS2X_NO_LTO)
                 /Gy # function-level linking
                 /Gw # global data in COMDAT
                 /GF # string pooling
@@ -26,7 +26,7 @@ function(EnableFastReleaseMode TargetName)
         if(TARGET ${TargetName})
             target_link_options(${TargetName} PRIVATE
                 $<$<CONFIG:Release>:
-                    /LTCG # link-time code generation
+                    $<$<NOT:$<BOOL:${PS2X_NO_LTO}>>:/LTCG> # link-time code generation
                     /OPT:REF # remove unreferenced
                     /OPT:ICF # fold identical COMDATs
                 >
@@ -34,7 +34,7 @@ function(EnableFastReleaseMode TargetName)
         endif()
     endif()
 
-    if(IPO_SUPPORTED)
+    if(IPO_SUPPORTED AND NOT PS2X_NO_LTO)
         set_property(TARGET ${TargetName} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
     else()
         message(WARNING "Interprocedural optimization not supported: ${ipo_error}")

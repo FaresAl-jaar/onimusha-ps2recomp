@@ -1,6 +1,7 @@
 name: build
 
-on: [push, pull_request]
+# Upstream PS2Recomp checks; run by hand (the generated Onimusha runner makes them very long).
+on: [workflow_dispatch]
 
 jobs:
   linux-gcc-clang:

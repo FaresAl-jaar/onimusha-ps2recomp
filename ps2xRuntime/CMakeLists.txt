@@ -377,6 +377,8 @@ endfunction()
 
 add_library(ps2_runtime STATIC
     src/lib/game_overrides.cpp
+    src/lib/ps2_host_settings.cpp
+    src/lib/ps2_host_input.cpp
     src/lib/games/onimusha_dod_movies.cpp
     src/lib/gs/ps2_gif_arbiter.cpp
     src/lib/ps2_audio.cpp
@@ -521,6 +523,11 @@ if(PS2X_ENABLE_DEBUG_UI AND NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID)
     )
     target_link_libraries(ps2EntryRunner PRIVATE rlImGui imgui)
     target_compile_definitions(ps2EntryRunner PRIVATE PS2X_ENABLE_DEBUG_UI=1)
+endif()
+
+if(WIN32)
+    # Game icon for the executable (Onimusha: Dawn of Dreams).
+    target_sources(ps2EntryRunner PRIVATE res/onimusha.rc)
 endif()
 
 ps2x_stage_ffmpeg_runtime_dlls(ps2EntryRunner)

@@ -2,6 +2,7 @@
 #include <vector>
 #include <cstdlib>
 #include "ps2_runtime.h"
+#include "ps2_host_settings.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
 #include "ps2_syscalls.h"
@@ -831,9 +832,49 @@ bool PS2Runtime::initialize(const char *title)
 #if defined(PLATFORM_VITA)
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
 #else
-        SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-        InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
+        {
+            const PS2HostSettings &host = ps2xHostSettings();
+            unsigned flags = FLAG_WINDOW_RESIZABLE;
+            if (host.vsync)
+                flags |= FLAG_VSYNC_HINT;
+            SetConfigFlags(flags);
+            const int scale = std::clamp(host.resolutionScale, 1, 8);
+            InitWindow(640 * scale, 448 * scale, title);
+            const int monitor = std::clamp(host.monitor, 0, std::max(0, GetMonitorCount() - 1));
+            const int monitorWidth = GetMonitorWidth(monitor);
+            const int monitorHeight = GetMonitorHeight(monitor);
+            if (host.mode == "fullscreen")
+            {
+                SetWindowMonitor(monitor);
+                const int w = host.width > 0 ? host.width : monitorWidth;
+                const int h = host.height > 0 ? host.height : monitorHeight;
+                SetWindowSize(w, h);
+                ToggleFullscreen();
+            }
+            else if (host.mode == "borderless")
+            {
+                SetWindowMonitor(monitor);
+                ToggleBorderlessWindowed();
+            }
+            else
+            {
+                // Windowed: picture size times the scale, at most 90% of the monitor, centred.
+                int w = host.width > 0 ? host.width : 640 * scale;
+                int h = host.height > 0 ? host.height : 448 * scale;
+                if (monitorWidth > 0 && monitorHeight > 0)
+                {
+                    const float fit = std::min(1.0f, std::min(0.9f * monitorWidth / w, 0.9f * monitorHeight / h));
+                    w = static_cast<int>(w * fit);
+                    h = static_cast<int>(h * fit);
+                    SetWindowSize(w, h);
+                    const Vector2 origin = GetMonitorPosition(monitor);
+                    SetWindowPosition(static_cast<int>(origin.x) + (monitorWidth - w) / 2, static_cast<int>(origin.y) + (monitorHeight - h) / 2);
+                }
+            }
+            SetExitKey(KEY_NULL); // Escape belongs to the game; close with the window button or Alt+F4
+        }
         InitAudioDevice();
+        SetMasterVolume(std::clamp(ps2xHostSettings().masterVolume, 0, 100) / 100.0f);
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
         openSpuStream();
 #endif
@@ -1174,6 +1215,14 @@ void PS2Runtime::configureIoPathsFromElf(const std::string &elfPath)
         paths.hostRoot = paths.elfDirectory;
         paths.cdRoot = paths.elfDirectory;
         paths.mcRoot = paths.elfDirectory / "mc0";
+    }
+    // Memory card next to the program (saves/mc0) when the host settings name a save folder.
+    if (!ps2xHostSettings().saveDirectory.empty())
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(ps2xHostSettings().saveDirectory / "mc0", ec);
+        if (!ec)
+            paths.mcRoot = ps2xHostSettings().saveDirectory / "mc0";
     }
 
     setIoPaths(paths);
@@ -2528,6 +2577,7 @@ void PS2Runtime::run()
     Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
     Texture2D frameTex = LoadTextureFromImage(blank);
     UnloadImage(blank);
+    SetTextureFilter(frameTex, ps2xHostSettings().textureFilter == "nearest" ? TEXTURE_FILTER_POINT : TEXTURE_FILTER_BILINEAR);
 
     std::atomic<bool> gameThreadFinished{false};
 
@@ -2653,9 +2703,28 @@ void PS2Runtime::run()
         const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
         const float screenWidth = static_cast<float>(GetScreenWidth());
         const float screenHeight = static_cast<float>(GetScreenHeight());
-        const float scale = std::min(screenWidth / srcWidth, screenHeight / srcHeight);
-        const float dstWidth = srcWidth * scale;
-        const float dstHeight = srcHeight * scale;
+        // The game draws a 4:3 picture. "auto" and "4:3" keep it; the wide choices stretch it to that shape.
+        static const float targetAspect = []
+        {
+            const std::string &a = ps2xHostSettings().aspectRatio;
+            if (a == "16:9")
+                return 16.0f / 9.0f;
+            if (a == "21:9")
+                return 21.0f / 9.0f;
+            if (a == "32:9")
+                return 32.0f / 9.0f;
+            return 4.0f / 3.0f;
+        }();
+        float dstWidth = screenWidth;
+        float dstHeight = screenWidth / targetAspect;
+        if (dstHeight > screenHeight)
+        {
+            dstHeight = screenHeight;
+            dstWidth = screenHeight * targetAspect;
+        }
+        // Alt+Enter switches between window and fullscreen.
+        if ((IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) && IsKeyPressed(KEY_ENTER))
+            ToggleBorderlessWindowed();
         const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
         const Rectangle dstRect{
             (screenWidth - dstWidth) * 0.5f,

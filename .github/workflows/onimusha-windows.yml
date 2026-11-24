@@ -1,0 +1,73 @@
+name: Onimusha Windows build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: onimusha-windows
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: lukka/get-cmake@latest
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure game
+        shell: cmd
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=/O2 /Ob1 /DNDEBUG"
+          "-DCMAKE_C_FLAGS_RELWITHDEBINFO=/O2 /Ob1 /DNDEBUG"
+          -DPS2X_BUILD_RECOMP=OFF -DPS2X_BUILD_ANALYZER=OFF -DPS2X_BUILD_TEST=OFF -DPS2X_BUILD_STUDIO=OFF
+          -DPS2X_SHOW_WINDOWS_CONSOLE=OFF -DPS2X_ENABLE_DEBUG_UI=OFF -DPS2X_NO_LTO=ON
+
+      - name: Build game
+        shell: cmd
+        run: cmake --build build --target ps2EntryRunner --parallel 4
+
+      - name: Build launcher
+        shell: cmd
+        run: |
+          cmake -S launcher -B build-launcher -G "Visual Studio 17 2022" -A x64
+          cmake --build build-launcher --config Release --target OnimushaLauncher
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "OnimushaPC"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item build/ps2xRuntime/ps2EntryRunner.exe "$out/Onimusha.exe"
+          Get-ChildItem build/ps2xRuntime -Filter *.dll | Copy-Item -Destination $out
+          Copy-Item build-launcher/OnimushaPC/OnimushaLauncher.exe $out
+          Copy-Item onimusha/LIESMICH.txt $out
+          Compress-Archive -Path "$out/*" -DestinationPath OnimushaPC-windows-x64.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OnimushaPC-windows-x64
+          path: OnimushaPC-windows-x64.zip
+
+      - name: Publish download (release "latest")
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Onimusha PC (latest build)
+          prerelease: true
+          files: OnimushaPC-windows-x64.zip
+          body: |
+            Automatic build of main (${{ github.sha }}).
+            Unzip, start OnimushaLauncher.exe, choose your Disc 1 ISO, press PLAY.
