@@ -482,7 +482,8 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     {
         static uint64_t previousBucket = ~uint64_t{0};
         const uint64_t bucket = currentTick / 120;
-        if (bucket != previousBucket && bucket < 60 && width && height && !s_scratch.empty())
+        static const uint64_t maxBuckets = std::getenv("PS2X_SCANOUT_SHOTS_MAX") ? std::strtoull(std::getenv("PS2X_SCANOUT_SHOTS_MAX"), nullptr, 10) : 60u;
+        if (bucket != previousBucket && bucket < maxBuckets && width && height && !s_scratch.empty())
         {
             previousBucket = bucket;
             const auto path = std::filesystem::path(directory) / ("tick-" + std::to_string(currentTick) + ".png");
