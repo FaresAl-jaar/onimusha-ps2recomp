@@ -1,0 +1,61 @@
+#include <stdexcept>
+#include "ps2_runtime_macros.h"
+#include "ps2_runtime.h"
+#include <ps2_recompiled_functions.h>
+#include <ps2_recompiled_stubs.h>
+
+#include "ps2_syscalls.h"
+#include "ps2_stubs.h"
+
+#ifdef PS2_FUNCTION_LOG_TRACKER
+#include "ps2_log.h"
+#endif
+
+// Function: sub_0020FA00
+// Address: 0x20fa00 - 0x20fa20
+void sub_0020FA00_0x20fa00(uint8_t* rdram, R5900Context* ctx, PS2Runtime *runtime) {
+#ifdef PS2_FUNCTION_LOG_TRACKER
+    PS_LOG_ENTRY("sub_0020FA00_0x20fa00");
+#endif
+
+    ctx->pc = 0x20fa00u;
+
+    // 0x20fa00: 0x510c0  sll         $v0, $a1, 3
+    ctx->pc = 0x20fa00u;
+    SET_GPR_S32(ctx, 2, (int32_t)SLL32(GPR_U32(ctx, 5), 3));
+    // 0x20fa04: 0x451023  subu        $v0, $v0, $a1
+    ctx->pc = 0x20fa04u;
+    SET_GPR_S32(ctx, 2, (int32_t)SUB32(GPR_U32(ctx, 2), GPR_U32(ctx, 5)));
+    // 0x20fa08: 0x21080  sll         $v0, $v0, 2
+    ctx->pc = 0x20fa08u;
+    SET_GPR_S32(ctx, 2, (int32_t)SLL32(GPR_U32(ctx, 2), 2));
+    // 0x20fa0c: 0x451021  addu        $v0, $v0, $a1
+    ctx->pc = 0x20fa0cu;
+    SET_GPR_S32(ctx, 2, (int32_t)ADD32(GPR_U32(ctx, 2), GPR_U32(ctx, 5)));
+    // 0x20fa10: 0x21080  sll         $v0, $v0, 2
+    ctx->pc = 0x20fa10u;
+    SET_GPR_S32(ctx, 2, (int32_t)SLL32(GPR_U32(ctx, 2), 2));
+    // 0x20fa14: 0x822021  addu        $a0, $a0, $v0
+    ctx->pc = 0x20fa14u;
+    SET_GPR_S32(ctx, 4, (int32_t)ADD32(GPR_U32(ctx, 4), GPR_U32(ctx, 2)));
+    // 0x20fa18: 0x3e00008  jr          $ra
+    ctx->pc = 0x20FA18u;
+    {
+        const uint32_t jumpTarget = GPR_U32(ctx, 31);
+        ctx->pc = 0x20FA1Cu;
+        ctx->in_delay_slot = true;
+        ctx->branch_pc = 0x20FA18u;
+        // 0x20fa1c: 0x8c82132c  lw          $v0, 0x132C($a0) (Delay Slot)
+        SET_GPR_S32(ctx, 2, (int32_t)READ32(ADD32(GPR_U32(ctx, 4), 4908)));
+        ctx->in_delay_slot = false;
+        ctx->pc = jumpTarget;
+        #if defined(PS2X_STRICT_RETURN_DIAGNOSTICS) && PS2X_STRICT_RETURN_DIAGNOSTICS
+        (void)runtime->dispatchGuestBranch(rdram, ctx, jumpTarget, 0x20FA18u, 0u, PS2Runtime::GuestBranchKind::Return, "JR $ra");
+        return;
+        #else
+        ctx->pc = jumpTarget;
+        return;
+        #endif
+    }
+    ctx->pc = 0x20FA20u;
+}

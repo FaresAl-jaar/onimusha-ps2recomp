@@ -3,6 +3,11 @@
 #include "ps2_stubs.h"
 #include <ps2_recompiled_stubs.h>
 #include "ps2_syscalls.h"
+void sub_0010B948_0x10b948(uint8_t* rdram, R5900Context* ctx, PS2Runtime* runtime);
+void sub_0010BAA8_0x10baa8(uint8_t* rdram, R5900Context* ctx, PS2Runtime* runtime);
+void sub_0010BAB8_0x10bab8(uint8_t* rdram, R5900Context* ctx, PS2Runtime* runtime);
+void sub_0010BAC8_0x10bac8(uint8_t* rdram, R5900Context* ctx, PS2Runtime* runtime);
+void sub_0010BAE0_0x10bae0(uint8_t* rdram, R5900Context* ctx, PS2Runtime* runtime);
 
 extern const uint32_t g_ps2RecompiledFunctionTableBase = 0x100008u;
 extern const uint32_t g_ps2RecompiledFunctionTableEnd = 0x685f64u;
@@ -1569,6 +1574,15 @@ struct GeneratedFunctionTableInitializer {
         g_ps2RecompiledFunctionTable[10999] = sub_0010AB20_0x10ab20; // 0x10abe4
         g_ps2RecompiledFunctionTable[11012] = sub_0010AC18_0x10ac18; // 0x10ac18
         g_ps2RecompiledFunctionTable[11064] = sub_0010ACE8_0x10ace8; // 0x10ace8
+        g_ps2RecompiledFunctionTable[11076] = sub_0010ACE8_0x10ace8; // 0x10ad18
+        g_ps2RecompiledFunctionTable[11087] = sub_0010ACE8_0x10ace8; // 0x10ad44
+        g_ps2RecompiledFunctionTable[11096] = sub_0010ACE8_0x10ace8; // 0x10ad68
+        g_ps2RecompiledFunctionTable[11138] = sub_0010ACE8_0x10ace8; // 0x10ae10
+        g_ps2RecompiledFunctionTable[11157] = sub_0010ACE8_0x10ace8; // 0x10ae5c
+        g_ps2RecompiledFunctionTable[11159] = sub_0010ACE8_0x10ace8; // 0x10ae64
+        g_ps2RecompiledFunctionTable[11161] = sub_0010ACE8_0x10ace8; // 0x10ae6c
+        g_ps2RecompiledFunctionTable[11181] = sub_0010ACE8_0x10ace8; // 0x10aebc
+        g_ps2RecompiledFunctionTable[11196] = sub_0010ACE8_0x10ace8; // 0x10aef8
         g_ps2RecompiledFunctionTable[11206] = sub_0010AF20_0x10af20; // 0x10af20
         g_ps2RecompiledFunctionTable[11222] = sub_0010AF20_0x10af20; // 0x10af60
         g_ps2RecompiledFunctionTable[11247] = sub_0010AF20_0x10af20; // 0x10afc4
@@ -1796,11 +1810,23 @@ struct GeneratedFunctionTableInitializer {
         g_ps2RecompiledFunctionTable[11807] = sub_0010B6C8_0x10b6c8; // 0x10b884
         g_ps2RecompiledFunctionTable[11808] = sub_0010B6C8_0x10b6c8; // 0x10b888
         g_ps2RecompiledFunctionTable[11810] = sub_0010B890_0x10b890; // 0x10b890
+        g_ps2RecompiledFunctionTable[11814] = sub_0010B890_0x10b890; // 0x10b8a0
+        g_ps2RecompiledFunctionTable[11843] = sub_0010B890_0x10b890; // 0x10b914
+        g_ps2RecompiledFunctionTable[11850] = sub_0010B890_0x10b890; // 0x10b930
         g_ps2RecompiledFunctionTable[11854] = sub_0010B940_0x10b940; // 0x10b940
+        g_ps2RecompiledFunctionTable[11856] = sub_0010B948_0x10b948; // 0x10b948
+        g_ps2RecompiledFunctionTable[11867] = sub_0010B948_0x10b948; // 0x10b974
         g_ps2RecompiledFunctionTable[11872] = sub_0010B988_0x10b988; // 0x10b988
+        g_ps2RecompiledFunctionTable[11887] = sub_0010B988_0x10b988; // 0x10b9c4
         g_ps2RecompiledFunctionTable[11890] = sub_0010B9D0_0x10b9d0; // 0x10b9d0
+        g_ps2RecompiledFunctionTable[11904] = sub_0010B9D0_0x10b9d0; // 0x10ba08
         g_ps2RecompiledFunctionTable[11908] = sub_0010BA18_0x10ba18; // 0x10ba18
         g_ps2RecompiledFunctionTable[11912] = sub_0010BA28_0x10ba28; // 0x10ba28
+        g_ps2RecompiledFunctionTable[11927] = sub_0010BA28_0x10ba28; // 0x10ba64
+        g_ps2RecompiledFunctionTable[11944] = sub_0010BAA8_0x10baa8; // 0x10baa8
+        g_ps2RecompiledFunctionTable[11948] = sub_0010BAB8_0x10bab8; // 0x10bab8
+        g_ps2RecompiledFunctionTable[11952] = sub_0010BAC8_0x10bac8; // 0x10bac8
+        g_ps2RecompiledFunctionTable[11958] = sub_0010BAE0_0x10bae0; // 0x10bae0
         g_ps2RecompiledFunctionTable[11966] = sub_0010BB00_0x10bb00; // 0x10bb00
         g_ps2RecompiledFunctionTable[11980] = sub_0010BB38_0x10bb38; // 0x10bb38
         g_ps2RecompiledFunctionTable[11989] = sub_0010BB38_0x10bb38; // 0x10bb5c
@@ -1868,6 +1894,7 @@ struct GeneratedFunctionTableInitializer {
         g_ps2RecompiledFunctionTable[12072] = sub_0010BC70_0x10bc70; // 0x10bca8
         g_ps2RecompiledFunctionTable[12076] = sub_0010BCB8_0x10bcb8; // 0x10bcb8
         g_ps2RecompiledFunctionTable[12098] = sub_0010BD10_0x10bd10; // 0x10bd10
+        g_ps2RecompiledFunctionTable[12115] = sub_0010BD10_0x10bd10; // 0x10bd54
         g_ps2RecompiledFunctionTable[12160] = sub_0010BE08_0x10be08; // 0x10be08
         g_ps2RecompiledFunctionTable[12175] = sub_0010BE08_0x10be08; // 0x10be44
         g_ps2RecompiledFunctionTable[12199] = sub_0010BE08_0x10be08; // 0x10bea4
@@ -1904,6 +1931,9 @@ struct GeneratedFunctionTableInitializer {
         g_ps2RecompiledFunctionTable[12856] = sub_0010C538_0x10c538; // 0x10c8e8
         g_ps2RecompiledFunctionTable[12860] = sub_0010C538_0x10c538; // 0x10c8f8
         g_ps2RecompiledFunctionTable[12884] = sub_0010C958_0x10c958; // 0x10c958
+        g_ps2RecompiledFunctionTable[12903] = sub_0010C958_0x10c958; // 0x10c9a4
+        g_ps2RecompiledFunctionTable[12913] = sub_0010C958_0x10c958; // 0x10c9cc
+        g_ps2RecompiledFunctionTable[12919] = sub_0010C958_0x10c958; // 0x10c9e4
         g_ps2RecompiledFunctionTable[12932] = sub_0010CA18_0x10ca18; // 0x10ca18
         g_ps2RecompiledFunctionTable[12948] = sub_0010CA18_0x10ca18; // 0x10ca58
         g_ps2RecompiledFunctionTable[12959] = sub_0010CA18_0x10ca18; // 0x10ca84

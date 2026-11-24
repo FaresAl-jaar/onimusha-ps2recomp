@@ -1,0 +1,52 @@
+#include <stdexcept>
+#include "ps2_runtime_macros.h"
+#include "ps2_runtime.h"
+#include <ps2_recompiled_functions.h>
+#include <ps2_recompiled_stubs.h>
+
+#include "ps2_syscalls.h"
+#include "ps2_stubs.h"
+
+#ifdef PS2_FUNCTION_LOG_TRACKER
+#include "ps2_log.h"
+#endif
+
+// Function: sub_0020B6A8
+// Address: 0x20b6a8 - 0x20b6c8
+void sub_0020B6A8_0x20b6a8(uint8_t* rdram, R5900Context* ctx, PS2Runtime *runtime) {
+#ifdef PS2_FUNCTION_LOG_TRACKER
+    PS_LOG_ENTRY("sub_0020B6A8_0x20b6a8");
+#endif
+
+    ctx->pc = 0x20b6a8u;
+
+    // 0x20b6a8: 0x27bdfff0  addiu       $sp, $sp, -0x10
+    ctx->pc = 0x20b6a8u;
+    SET_GPR_S32(ctx, 29, (int32_t)ADD32(GPR_U32(ctx, 29), 4294967280));
+    // 0x20b6ac: 0x3c020088  lui         $v0, 0x88
+    ctx->pc = 0x20b6acu;
+    SET_GPR_S32(ctx, 2, (int32_t)((uint32_t)136 << 16));
+    // 0x20b6b0: 0xffbf0000  sd          $ra, 0x0($sp)
+    ctx->pc = 0x20b6b0u;
+    WRITE64(ADD32(GPR_U32(ctx, 29), 0), GPR_U64(ctx, 31));
+    // 0x20b6b4: 0x24040002  addiu       $a0, $zero, 0x2
+    ctx->pc = 0x20b6b4u;
+    SET_GPR_S32(ctx, 4, (int32_t)ADD32(GPR_U32(ctx, 0), 2));
+    // 0x20b6b8: 0x8c45fb44  lw          $a1, -0x4BC($v0)
+    ctx->pc = 0x20b6b8u;
+    SET_GPR_S32(ctx, 5, (int32_t)FAST_READ32(0x87FB44u));
+    // 0x20b6bc: 0xdfbf0000  ld          $ra, 0x0($sp)
+    ctx->pc = 0x20b6bcu;
+    SET_GPR_U64(ctx, 31, READ64(ADD32(GPR_U32(ctx, 29), 0)));
+    // 0x20b6c0: 0x8094d12  j           func_253448
+    ctx->pc = 0x20B6C0u;
+    ctx->pc = 0x20B6C4u;
+    ctx->in_delay_slot = true;
+    ctx->branch_pc = 0x20B6C0u;
+    // 0x20b6c4: 0x27bd0010  addiu       $sp, $sp, 0x10 (Delay Slot)
+    SET_GPR_S32(ctx, 29, (int32_t)ADD32(GPR_U32(ctx, 29), 16));
+    ctx->in_delay_slot = false;
+    ctx->pc = 0x253448u;
+    sub_00253448_0x253448(rdram, ctx, runtime); return;
+    ctx->pc = 0x20B6C8u;
+}
