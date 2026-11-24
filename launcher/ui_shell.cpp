@@ -1,4 +1,5 @@
 #include <stdexcept>
+#include <functional>
 #include "ui.h"
 #include <algorithm>
 #include <cmath>

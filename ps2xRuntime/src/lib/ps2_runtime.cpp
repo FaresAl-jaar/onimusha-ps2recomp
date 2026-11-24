@@ -91,6 +91,10 @@ struct ProgramHeader
 
 // Host audio mixed into the SPU2 output (native movie soundtracks).
 void (*g_ps2xHostAudioMix)(int16_t *frames, size_t count) = nullptr;
+// Graphics counters for PS2X_GFX_STATS: 0 MSCAL/MSCNT, 1 XGKICK, 2 GIF packets.
+std::atomic<uint64_t> g_ps2xGfxCounters[4];
+// A VU1 program runs to its end (E bit) like on hardware; the cap only stops a runaway program.
+static constexpr uint32_t kVu1ProgramCycleCap = 1u << 24;
 
 namespace
 {
@@ -780,9 +784,10 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     g_ps2xGfxCounters[0].fetch_add(1, std::memory_order_relaxed);
                                      m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                                                   m_gs, &m_memory, startPC, top, itop, 65536);
+                                                   m_gs, &m_memory, startPC, top, itop, kVu1ProgramCycleCap);
                                      cpuContext->vu0_vpu_stat =
                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
@@ -800,7 +805,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
                                      m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                                                  m_gs, &m_memory, top, itop, 65536);
+                                                  m_gs, &m_memory, top, itop, kVu1ProgramCycleCap);
                                      cpuContext->vu0_vpu_stat =
                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
@@ -1550,6 +1555,23 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
             const char *env = std::getenv("PS2X_FUNC_HIST");
             return env ? std::strtoull(env, nullptr, 10) : 0u;
         }();
+        static const uint64_t gfxWindow = []() -> uint64_t {
+            const char *env = std::getenv("PS2X_GFX_STATS");
+            return env ? std::strtoull(env, nullptr, 10) : 0u;
+        }();
+        if (gfxWindow != 0u && m_eeScheduler)
+        {
+            static uint64_t gfxStart = 0u;
+            const uint64_t now = m_eeScheduler->currentVSyncTick();
+            if (now >= gfxStart + gfxWindow)
+            {
+                extern void ps2xPrintGsDrawStats(uint64_t tick);
+                std::cerr << "[gfx] tick=" << now << " vu1calls=" << g_ps2xGfxCounters[0].exchange(0)
+                          << " xgkick=" << g_ps2xGfxCounters[1].exchange(0) << " gifpackets=" << g_ps2xGfxCounters[2].exchange(0) << std::endl;
+                ps2xPrintGsDrawStats(now);
+                gfxStart = now;
+            }
+        }
         if (histWindow != 0u && m_eeScheduler)
         {
             static std::unordered_map<uint32_t, uint64_t> hist;

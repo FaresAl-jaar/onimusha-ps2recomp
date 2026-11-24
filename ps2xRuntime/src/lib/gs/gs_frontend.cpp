@@ -1,3 +1,8 @@
+#include <cstdlib>
+#include <vector>
+#include <string>
+#include <mutex>
+#include <map>
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/gs/gs_cpu_backend.h"
 #include "ps2_log.h"
@@ -641,8 +646,40 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
     return true;
 }
 
+
+// PS2X_GFX_STATS: draws per (primitive type, FRAME base, test bits, zbuf), printed by the runtime.
+namespace
+{
+    std::mutex g_drawStatsMutex;
+    std::map<std::string, uint64_t> g_drawStats;
+}
+static void ps2xCountGsDraw(const GSPrimitiveBatch &batch)
+{
+    static const bool on = std::getenv("PS2X_GFX_STATS") != nullptr;
+    if (!on)
+        return;
+    const GSContext &c = batch.state.context;
+    char key[160];
+    std::snprintf(key, sizeof(key), "prim=%u tme=%u fbp=0x%x fbw=%u psm=%u fbmsk=0x%x test=0x%llx zbp=0x%x zpsm=%u zmsk=%u scis=%u,%u-%u,%u",
+                  static_cast<unsigned>(batch.state.prim.type), batch.state.prim.tme ? 1u : 0u, c.frame.fbp, c.frame.fbw, c.frame.psm,
+                  c.frame.fbmsk, static_cast<unsigned long long>(c.test), c.zbuf.zbp, c.zbuf.psm, c.zbuf.zmask ? 1u : 0u,
+                  c.scissor.x0, c.scissor.y0, c.scissor.x1, c.scissor.y1);
+    std::lock_guard<std::mutex> lock(g_drawStatsMutex);
+    ++g_drawStats[key];
+}
+void ps2xPrintGsDrawStats(uint64_t tick)
+{
+    std::lock_guard<std::mutex> lock(g_drawStatsMutex);
+    std::vector<std::pair<std::string, uint64_t>> v(g_drawStats.begin(), g_drawStats.end());
+    std::sort(v.begin(), v.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+    for (size_t i = 0; i < v.size() && i < 12; ++i)
+        std::fprintf(stderr, "[gfx] tick=%llu draws=%llu %s\n", static_cast<unsigned long long>(tick), static_cast<unsigned long long>(v[i].second), v[i].first.c_str());
+    g_drawStats.clear();
+}
+extern std::atomic<uint64_t> g_ps2xGfxCounters[4];
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
+    g_ps2xGfxCounters[2].fetch_add(1, std::memory_order_relaxed);
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (!data || sizeBytes < 16 || !m_backend)
         return;
@@ -1583,6 +1620,7 @@ void GS::vertexKick(bool drawing)
     {
         GSPrimitiveBatch batch = buildDrawBatch(needed);
         updatePreferredDisplaySourceForDraw(batch);
+        ps2xCountGsDraw(batch);
         m_backend->Submit(batch);
         recordDrawDebugEventUnlocked(needed);
     }

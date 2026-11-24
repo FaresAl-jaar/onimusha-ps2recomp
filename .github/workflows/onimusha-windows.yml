@@ -42,8 +42,8 @@ jobs:
       - name: Build launcher
         shell: cmd
         run: |
-          cmake -S launcher -B build-launcher -G "Visual Studio 17 2022" -A x64
-          cmake --build build-launcher --config Release --target OnimushaLauncher
+          cmake -S launcher -B build-launcher -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build-launcher --target OnimushaLauncher
 
       - name: Package
         shell: pwsh

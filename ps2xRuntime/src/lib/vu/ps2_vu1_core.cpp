@@ -1,3 +1,4 @@
+#include <atomic>
 #include "runtime/ps2_vu1.h"
 #include "runtime/gs/ps2_gif_arbiter.h"
 #include "runtime/gs/gs_frontend.h"
@@ -926,8 +927,10 @@ void VU1Interpreter::finishXgkick()
     m_xgkick.active = false;
 }
 
+extern std::atomic<uint64_t> g_ps2xGfxCounters[4];
 void VU1Interpreter::startXgkick(uint32_t qwordAddress)
 {
+    g_ps2xGfxCounters[1].fetch_add(1, std::memory_order_relaxed);
     if (m_unit != Unit::VU1 || !m_activeVuData || m_activeVuDataSize < 16u)
         return;
 
