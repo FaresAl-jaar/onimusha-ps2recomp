@@ -2798,9 +2798,18 @@ void PS2Runtime::run()
         uint32_t gpuTexture = 0u;
         if (m_gpuPresentation && m_gs.latchedHostPresentationTexture(gpuTexture, presentWidth, presentHeight))
         {
+            static bool s_first = true;
+            if (s_first)
+            {
+                std::fprintf(stderr, "[gs] first GPU frame: texture %u, %ux%u\n", gpuTexture, presentWidth, presentHeight);
+                s_first = false;
+            }
         }
         else
         {
+            static uint64_t s_noFrame = 0;
+            if (m_gpuPresentation && (++s_noFrame == 300u || s_noFrame % 3600u == 0u))
+                std::fprintf(stderr, "[gs] no GPU frame yet after %llu window frames\n", static_cast<unsigned long long>(s_noFrame));
             gpuTexture = 0u;
             if (!m_gpuPresentation)
                 UploadFrame(frameTex, this, presentWidth, presentHeight);
