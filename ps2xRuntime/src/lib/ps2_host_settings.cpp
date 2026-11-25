@@ -293,6 +293,7 @@ bool ps2xLoadHostSettings(const std::filesystem::path &file)
     readString(graphics, "aspect_ratio", s.aspectRatio);
     readString(graphics, "texture_filter", s.textureFilter);
     readString(graphics, "renderer", s.renderer);
+    readString(graphics, "hd_textures", s.hdTextures);
     readInt(audio, "master", s.masterVolume);
     readBool(input, "mouse_keyboard", s.mouseKeyboard);
     readBool(input, "mouse_camera", s.mouseCamera);

@@ -45,6 +45,28 @@ std::optional<std::string> browseDisc(HWND owner, bool folder, int disc) {
     std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> path(value, &CoTaskMemFree);
     return fs::path(path.get()).u8string();
 }
+std::optional<std::string> browseTexturePack(HWND owner, bool folder) {
+    ComPtr<IFileOpenDialog> dialog;
+    checked(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)), "Open texture pack picker");
+    DWORD flags{};
+    checked(dialog->GetOptions(&flags), "Read picker options");
+    checked(dialog->SetOptions(flags | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST |
+        (folder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST) | FOS_NOCHANGEDIR), "Configure texture pack picker");
+    if (!folder) {
+        COMDLG_FILTERSPEC filter{L"HD texture pack (*.zip)", L"*.zip"};
+        checked(dialog->SetFileTypes(1, &filter), "Set zip filter");
+    }
+    checked(dialog->SetTitle(folder ? L"Select the HD texture folder" : L"Select the HD texture pack (DoD2.5.zip)"), "Set picker title");
+    HRESULT hr = dialog->Show(owner);
+    if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return {};
+    checked(hr, "Browse for texture pack");
+    ComPtr<IShellItem> item;
+    checked(dialog->GetResult(&item), "Read selection");
+    PWSTR value{};
+    checked(item->GetDisplayName(SIGDN_FILESYSPATH, &value), "Read path");
+    std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> path(value, &CoTaskMemFree);
+    return fs::path(path.get()).u8string();
+}
 bool validDisc(const std::string& utf8path, int disc) {
     if (utf8path.empty() || (disc != 1 && disc != 2)) return false;
     try {

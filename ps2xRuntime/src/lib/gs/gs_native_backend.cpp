@@ -1,4 +1,5 @@
 #include "runtime/gs/gs_native_backend.h"
+#include "runtime/native/hd_textures.h"
 
 #include "runtime/gs/gs_cpu_backend.h"
 #include "runtime/gs/ps2_gs_memory.h"
@@ -12,6 +13,7 @@
 #include "GLFW/glfw3.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1056,6 +1058,16 @@ GSNativeBackend::RenderTarget *GSNativeBackend::directSource(const GSDrawState &
     const auto sameLayout = [](uint32_t a, uint32_t b) { return a == b || ((a | b) & ~0x1u) == 0u; };
     if (!source || !sameLayout(source->psm, tex0.psm) || std::max<uint32_t>(source->fbw, 1u) != std::max<uint32_t>(tex0.tbw, 1u))
         return nullptr;
+    // Rows below what the target covers are other buffers in GS memory (Onimusha DoD draws its scene into a buffer
+    // further down and copies it up through a 512x1024 texture at the display buffer): those reads see GS memory.
+    if (!m_batch.empty())
+    {
+        float maxRow = -1e30f;
+        for (const Vertex &v : m_batch)
+            maxRow = std::max(maxRow, v.q != 0.0f ? v.t / v.q : v.t);
+        if (maxRow > static_cast<float>(source->height) + 1.0f)
+            return nullptr;
+    }
     return source;
 }
 
@@ -1948,6 +1960,8 @@ bool GSNativeBackend::bindTexture(const GSDrawState &state, const RenderTarget &
         syncMemoryPages(firstPage, endPage);
         if (const uint32_t psm = context.tex0.psm; psm == 0x13u || psm == 0x14u || psm == 0x1Bu || psm == 0x24u || psm == 0x2Cu)
             syncMemoryPages(std::min(context.tex0.cbp / 32u, kPages), std::min((context.tex0.cbp + 4u) / 32u + 1u, kPages));
+        if (bindHdTexture(state, width, height))
+            return true;
         if (static const bool cpuDecode = std::getenv("PS2X_GS_NATIVE_CPUDECODE") != nullptr;
             !cpuDecode && bindDecodedTexture(state))
         {
@@ -2107,11 +2121,33 @@ void GSNativeBackend::flushBatch()
 {
     if (m_batch.empty())
         return;
+    static const bool s_stats = std::getenv("PS2X_GS_NATIVE_STATS") != nullptr;
+    static uint64_t s_flushes = 0, s_noContext = 0, s_verts = 0;
     if (!ensureContext(true))
     {
+        ++s_noContext;
         if (m_contextFailed)
             m_batch.clear();
         return;
+    }
+    if (s_stats)
+    {
+        static std::unordered_map<uint64_t, uint64_t> s_perTarget;
+        ++s_flushes;
+        s_verts += m_batch.size();
+        ++s_perTarget[static_cast<uint64_t>(m_batchState.context.frame.fbp) << 8 | m_batchState.prim.type << 1 |
+                      (m_batchState.prim.tme ? 1u : 0u)];
+        if ((s_flushes % 20000u) == 0u)
+        {
+            std::fprintf(stderr, "[gs:stats] flushes=%llu noContext=%llu verts=%llu targets=%zu:", static_cast<unsigned long long>(s_flushes),
+                         static_cast<unsigned long long>(s_noContext), static_cast<unsigned long long>(s_verts), m_targets.size());
+            for (const auto &[k, n] : s_perTarget)
+                std::fprintf(stderr, " fbp%llu/p%llu/t%llu=%llu", static_cast<unsigned long long>(k >> 8),
+                             static_cast<unsigned long long>(k >> 1 & 7u), static_cast<unsigned long long>(k & 1u),
+                             static_cast<unsigned long long>(n));
+            std::fprintf(stderr, "\n");
+            s_perTarget.clear();
+        }
     }
     // PS2X_GS_NATIVE_STOPDRAW=<n>: no batch drawn after the first n (diagnostics: which batch breaks a buffer).
     if (static const long long s_stop = [] { const char *v = std::getenv("PS2X_GS_NATIVE_STOPDRAW"); return v ? std::atoll(v) : -1ll; }();
@@ -2453,7 +2489,111 @@ void GSNativeBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclu
         syncMemoryPages(first, end);
         pullGpuPages(first, end);
     }
+    if (tex0.cld != 0u)
+        ++m_clutGeneration;
     m_memory->LoadClut(tex0, texclut);
+}
+
+bool GSNativeBackend::bindHdTexture(const GSDrawState &state, float &width, float &height)
+{
+    ps2x::native::HdTexturePack &pack = ps2x::native::hdTextures();
+    if (!pack.isOpen() || !m_vram)
+        return false;
+    const GSContext &context = state.context;
+    const uint32_t psm = context.tex0.psm;
+    if (psm != 0x00u && psm != 0x13u && psm != 0x14u)
+        return false;
+    const uint64_t tex0 = rawTex0(context.tex0);
+    // The texture's own hash only changes with its pages: kept per TBP/TBW/PSM/TW/TH and their page versions.
+    const auto [firstPage, endPage] = texturePages(context.tex0, context.clamp);
+    uint64_t pages = 0xcbf29ce484222325ull;
+    for (uint32_t page = firstPage; page < endPage && page < kPages; ++page)
+        pages = (pages ^ m_pageVersion[page]) * 0x100000001b3ull;
+    HdLookup &lookup = m_hdLookups[tex0 & 0x3FFFFFFFFull];
+    ps2x::native::HdTextureName name;
+    if (!lookup.hashed || lookup.pages != pages)
+    {
+        ps2x::native::HdTextureName hashed;
+        if (!ps2x::native::hdTextureName(m_vram, tex0 & 0x3FFFFFFFFull, 0, m_memory->clutData(), hashed))
+            return false;
+        lookup.texHash = hashed.texHash;
+        lookup.pages = pages;
+        lookup.hashed = true;
+    }
+    name.texHash = lookup.texHash;
+    name.bits = psm | static_cast<uint32_t>(context.tex0.tw) << 6 | static_cast<uint32_t>(context.tex0.th) << 10;
+    if (psm != 0x00u)
+    {
+        // The palette's hash: again only when a CLUT load or another CSA/format asks for it.
+        const uint64_t clutKey = (tex0 >> 51) ^ static_cast<uint64_t>(psm) << 20;
+        if (m_hdClutGeneration != m_clutGeneration || m_hdClutKey != clutKey)
+        {
+            ps2x::native::HdTextureName withClut;
+            // Hashing a 1x1 texture costs nothing; only the palette part is used.
+            const uint64_t probe = (tex0 & ~(0xFFull << 26)) & ~0x3FFFull;
+            if (!ps2x::native::hdTextureName(m_vram, probe, 0, m_memory->clutData(), withClut))
+                return false;
+            m_hdClutHash = withClut.clutHash;
+            m_hdClutGeneration = m_clutGeneration;
+            m_hdClutKey = clutKey;
+        }
+        name.clutHash = m_hdClutHash;
+    }
+    const uint64_t nameKey = name.texHash ^ (name.clutHash * 0x9E3779B97F4A7C15ull) ^ (uint64_t{name.bits} << 40);
+    HdUploaded &uploaded = m_hdTextures[nameKey];
+    if (uploaded.missing)
+        return false;
+    if (!uploaded.texture)
+    {
+        if (!pack.has(name))
+        {
+            uploaded.missing = true;
+            if (static const bool log = std::getenv("PS2X_HD_LOG") != nullptr; log)
+                std::fprintf(stderr, "[hd] no replacement %016llx-%016llx-%08x (tbp=%u)\n",
+                             static_cast<unsigned long long>(name.texHash), static_cast<unsigned long long>(name.clutHash),
+                             name.bits, context.tex0.tbp0);
+            return false;
+        }
+        const std::shared_ptr<const ps2x::native::HdTextureImage> image = pack.request(name);
+        if (!image)
+            return false; // still loading: the original meanwhile
+        GLuint texture = 0;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        for (size_t level = 0; level < image->levels.size(); ++level)
+        {
+            const auto &l = image->levels[level];
+            if (image->bc7)
+                glCompressedTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(level), 0x8E8C /* BPTC RGBA */, l.width, l.height,
+                                       0, static_cast<GLsizei>(l.data.size()), l.data.data());
+            else
+                glTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(level), GL_RGBA8, l.width, l.height, 0, GL_RGBA,
+                             GL_UNSIGNED_BYTE, l.data.data());
+        }
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(image->levels.size() - 1u));
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        uploaded.texture = texture;
+        if (++m_hdHits <= 20u || (m_hdHits % 100u) == 0u)
+            std::fprintf(stderr, "[hd] replaced %016llx-%016llx-%08x with %ux%u (%llu so far)\n",
+                         static_cast<unsigned long long>(name.texHash), static_cast<unsigned long long>(name.clutHash),
+                         name.bits, image->width, image->height, static_cast<unsigned long long>(m_hdHits));
+    }
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, uploaded.texture);
+    const GLint wrapS = (context.clamp & 0x3u) == 1u || (context.clamp & 0x3u) == 2u ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+    const GLint wrapT = (context.clamp >> 2 & 0x3u) == 1u || (context.clamp >> 2 & 0x3u) == 2u ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glUniform1i(m_uniforms.decode, 0);
+    glUniform1i(m_uniforms.targetWrap, 0);
+    glUniform1f(m_uniforms.fst, 1.0f);
+    // Texture coordinates stay in the original's texels: the shader divides by its size.
+    width = static_cast<float>(1u << std::min<uint32_t>(context.tex0.tw, 10u));
+    height = static_cast<float>(1u << std::min<uint32_t>(context.tex0.th, 10u));
+    return true;
 }
 
 void GSNativeBackend::markDirty(uint32_t psm, uint32_t bp, uint32_t bw, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
@@ -2860,6 +3000,37 @@ bool GSNativeBackend::presentOnGpu(const GSPresentationRequest &request, Present
                          static_cast<unsigned long long>(request.display2), haveTop ? 1 : 0, top.x, top.y, top.width,
                          top.height, top.scale, haveBottom ? 1 : 0, bottom.x, bottom.y, bottom.width, bottom.height,
                          outWidth, height);
+    }
+
+    // PS2X_GS_NATIVE_DUMP=<every n presents>: each render target's colour as /tmp/gsdump/<present>_fbp<fbp>.ppm.
+    if (static const int s_dumpEvery = [] { const char *v = std::getenv("PS2X_GS_NATIVE_DUMP"); return v ? std::atoi(v) : 0; }();
+        s_dumpEvery > 0)
+    {
+        static uint32_t s_count = 0;
+        if ((++s_count % static_cast<uint32_t>(s_dumpEvery)) == 0u)
+        {
+            std::error_code ec;
+            std::filesystem::create_directories("/tmp/gsdump", ec);
+            for (auto &[fbp, rt] : m_targets)
+            {
+                const uint32_t w = rt.width * m_scale, h = rt.height * m_scale;
+                if (!rt.framebuffer || w == 0 || h == 0)
+                    continue;
+                std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4u);
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, rt.framebuffer);
+                glReadPixels(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h), GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+                char name[128];
+                std::snprintf(name, sizeof(name), "/tmp/gsdump/%06u_fbp%u.ppm", s_count, fbp);
+                if (FILE *f = std::fopen(name, "wb"))
+                {
+                    std::fprintf(f, "P6 %u %u 255\n", w, h);
+                    for (uint32_t y = 0; y < h; ++y)
+                        for (uint32_t x = 0; x < w; ++x)
+                            std::fwrite(&px[(static_cast<size_t>(y) * w + x) * 4u], 1, 3, f);
+                    std::fclose(f);
+                }
+            }
+        }
     }
 
     PresentSlot &slot = m_presentSlots[m_presentNext];

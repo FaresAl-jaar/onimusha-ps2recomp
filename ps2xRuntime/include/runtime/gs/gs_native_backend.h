@@ -12,6 +12,7 @@
 
 class GSCpuBackend;
 struct GLFWwindow;
+using GLuint_t = unsigned int;
 
 // Native renderer (PS2X_GS_RENDERER=native): translates the primitives the GS frontend decodes into OpenGL draws
 // into GPU render targets, instead of reproducing the GS. See docs/native.md, layer 3.
@@ -150,6 +151,26 @@ private:
     void flushBatch();
     // Binds the batch's texture to unit 0 and gives its size in texels; false when it has none to sample.
     bool bindTexture(const GSDrawState &state, const RenderTarget &target, float &width, float &height);
+    // HD texture pack (hd_textures.h): the replacement for this draw's texture, bound, when the pack has one.
+    bool bindHdTexture(const GSDrawState &state, float &width, float &height);
+    struct HdLookup
+    {
+        uint64_t pages = 0;      // the texture's page versions when hashed
+        uint64_t texHash = 0;
+        bool hashed = false;
+    };
+    std::unordered_map<uint64_t, HdLookup> m_hdLookups; // by TBP/TBW/PSM/TW/TH
+    uint64_t m_clutGeneration = 1;
+    uint64_t m_hdClutGeneration = 0;
+    uint64_t m_hdClutKey = ~0ull;
+    uint64_t m_hdClutHash = 0;
+    struct HdUploaded
+    {
+        GLuint_t texture = 0;
+        bool missing = false;
+    };
+    std::unordered_map<uint64_t, HdUploaded> m_hdTextures; // by name hash
+    uint64_t m_hdHits = 0;
     uint64_t m_drawSerial = 0;
     // A Z-format texture over the Z buffer a render target drew (depth of field, fog from depth): that depth as the
     // GS would read it as texels, into m_depthTexture. False when no render target wrote that Z buffer.

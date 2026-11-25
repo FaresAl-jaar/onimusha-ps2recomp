@@ -28,7 +28,7 @@ void checkValues(const Settings& s) {
     if (s.version != 1 || d.monitor < 0 || d.width < 0 || d.height < 0 || ((d.width == 0) != (d.height == 0))
         || !oneOf<std::string>(d.mode, {"fullscreen","borderless","windowed"}) || !oneOf(d.fps_limit,{0,30,60,120,144})
         || g.resolution_scale < 1 || g.resolution_scale > 8 || !oneOf<std::string>(g.aspect_ratio,{"auto","4:3","16:9","21:9","32:9"})
-        || !oneOf<std::string>(g.texture_filter,{"nearest","bilinear"}) || !oneOf<std::string>(i.controller_type,{"auto","Xbox","PlayStation"})
+        || !oneOf<std::string>(g.texture_filter,{"nearest","bilinear"}) || !oneOf<std::string>(g.renderer,{"gpu","cpu"}) || !oneOf<std::string>(i.controller_type,{"auto","Xbox","PlayStation"})
         || !(i.mouse_sensitivity >= 0.1 && i.mouse_sensitivity <= 5.0)) throw std::invalid_argument("Unsupported settings value");
     for (int volume : {s.audio.master,s.audio.music,s.audio.effects,s.audio.voice})
         if (volume < 0 || volume > 100) throw std::invalid_argument("Volume out of range");
@@ -63,6 +63,10 @@ std::string loadSettings(const fs::path& file, Settings& settings) {
     in.exceptions(std::ios::badbit);
     try {
         json data = json::parse(in);
+        // Settings written by an older launcher lack the newer fields: they take their defaults.
+        json merged = json(Settings{});
+        merged.merge_patch(data);
+        data = std::move(merged);
         checkShape(data, json(Settings{}));
         auto parsed = data.get<Settings>();
         checkValues(parsed);

@@ -2882,7 +2882,8 @@ void PS2Runtime::run()
         else
             DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
         }
-        if (m_debugUiInitialized && m_debugUiDrawCallback)
+        static const bool hideDebugUi = std::getenv("PS2X_HIDE_DEBUG_UI") != nullptr;
+        if (m_debugUiInitialized && m_debugUiDrawCallback && !hideDebugUi)
         {
             m_debugUiDrawCallback(*this, m_debugUiUserData);
         }
