@@ -31,4 +31,6 @@ public:
     virtual void WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value) = 0;
     virtual void SnapshotVram(std::vector<uint8_t> &out) const = 0;
     virtual GSTransferSnapshot GetTransferSnapshot() const = 0;
+    // True when Present only works on the thread that draws (its GL context is current there).
+    virtual bool PresentsOnDrawThread() const { return false; }
 };

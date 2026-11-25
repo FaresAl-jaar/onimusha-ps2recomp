@@ -298,10 +298,12 @@ struct PresentationFrame
     uint32_t displayFbp = 0;
     uint32_t sourceFbp = 0;
     bool usedPreferred = false;
+    // A GPU renderer hands the picture over as a GL texture of a context shared with the window (rows top first).
+    uint32_t glTexture = 0;
 
     explicit operator bool() const
     {
-        return !pixels.empty() && width != 0u && height != 0u;
+        return (!pixels.empty() || glTexture != 0u) && width != 0u && height != 0u;
     }
 };
 

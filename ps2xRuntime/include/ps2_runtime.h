@@ -441,6 +441,7 @@ public:
     inline const PS2Memory &memory() const { return m_memory; }
 
     inline GS &gs() { return m_gs; }
+    bool gpuPresentation() const { return m_gpuPresentation; }
     inline const GS &gs() const { return m_gs; }
     inline GifArbiter &gifArbiter() { return m_gifArbiter; }
     inline const GifArbiter &gifArbiter() const { return m_gifArbiter; }
@@ -493,6 +494,7 @@ private:
     PS2Memory m_memory;
     GifArbiter m_gifArbiter;
     GS m_gs;
+    bool m_gpuPresentation = false;
     std::unique_ptr<PS2IopHostAdapter> m_iopHost;
     std::unique_ptr<ps2x::iop::IopSubsystem> m_iopSubsystem;
     PS2AudioBackend m_audioBackend;

@@ -17,6 +17,9 @@
 #include "ps2_host_backend.h"
 #include "ps2_iop_host.h"
 #include "ps2x/iop/iop_subsystem.h"
+#if defined(PS2X_HAVE_NATIVE_GS)
+#include "runtime/gs/gs_native_backend.h"
+#endif
 
 #include <iostream>
 #include <stdexcept>
@@ -887,6 +890,34 @@ bool PS2Runtime::initialize(const char *title)
             SetConfigFlags(flags);
             const int scale = std::clamp(host.resolutionScale, 1, 8);
             InitWindow(640 * scale, 448 * scale, title);
+#if defined(PS2X_HAVE_NATIVE_GS)
+            // GPU renderer: on unless PS2X_GS_RENDERER (or the launcher's "renderer") says "cpu".
+            {
+                const char *env = std::getenv("PS2X_GS_RENDERER");
+                const std::string choice = env && *env ? env : host.renderer;
+                if (choice != "cpu")
+                {
+                    if (!std::getenv("PS2X_GS_SCALE"))
+                    {
+                        static std::string scaleValue = std::to_string(std::clamp(host.resolutionScale, 1, 4));
+#if defined(_WIN32)
+                        _putenv_s("PS2X_GS_SCALE", scaleValue.c_str());
+#else
+                        setenv("PS2X_GS_SCALE", scaleValue.c_str(), 0);
+#endif
+                    }
+                    if (GLFWwindow *shared = GSNativeBackend::createSharedContext())
+                    {
+                        ps2x::native::setUploadsWanted(true);
+                        m_gs.setRasterBackend(std::make_unique<GSNativeBackend>(shared));
+                        m_gpuPresentation = true;
+                        std::fprintf(stderr, "[gs] GPU renderer on (scale %s)\n", std::getenv("PS2X_GS_SCALE"));
+                    }
+                    else
+                        std::fprintf(stderr, "[gs] GPU renderer unavailable, drawing on the CPU\n");
+                }
+            }
+#endif
             const int monitor = std::clamp(host.monitor, 0, std::max(0, GetMonitorCount() - 1));
             const int monitorWidth = GetMonitorWidth(monitor);
             const int monitorHeight = GetMonitorHeight(monitor);
@@ -2764,7 +2795,16 @@ void PS2Runtime::run()
         });
         uint32_t presentWidth = FB_WIDTH;
         uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
-        UploadFrame(frameTex, this, presentWidth, presentHeight);
+        uint32_t gpuTexture = 0u;
+        if (m_gpuPresentation && m_gs.latchedHostPresentationTexture(gpuTexture, presentWidth, presentHeight))
+        {
+        }
+        else
+        {
+            gpuTexture = 0u;
+            if (!m_gpuPresentation)
+                UploadFrame(frameTex, this, presentWidth, presentHeight);
+        }
 
         BeginDrawing();
         ClearBackground(BLACK);
@@ -2800,6 +2840,24 @@ void PS2Runtime::run()
             (screenHeight - dstHeight) * 0.5f,
             dstWidth,
             dstHeight};
+        if (gpuTexture != 0u)
+        {
+            // The GPU renderer's own picture, already at the internal resolution: filtered once.
+            static uint32_t s_filteredTexture = 0u;
+            Texture2D gpuTex{gpuTexture, static_cast<int>(presentWidth), static_cast<int>(presentHeight), 1,
+                             PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+            if (s_filteredTexture != gpuTexture)
+            {
+                SetTextureFilter(gpuTex, sharpBilinear ? TEXTURE_FILTER_BILINEAR : TEXTURE_FILTER_POINT);
+                s_filteredTexture = gpuTexture;
+            }
+            DrawTexturePro(gpuTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+        }
+        else if (m_gpuPresentation)
+        {
+        }
+        else
+        {
         const int kx = std::max(1, static_cast<int>(dstWidth / srcWidth));
         const int ky = std::max(1, static_cast<int>(dstHeight / srcHeight));
         if (sharpBilinear && (kx > 1 || ky > 1 || dstWidth != srcWidth || dstHeight != srcHeight))
@@ -2823,6 +2881,7 @@ void PS2Runtime::run()
         }
         else
             DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+        }
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {
             m_debugUiDrawCallback(*this, m_debugUiUserData);

@@ -130,6 +130,10 @@ public:
     void setDebugHistoryPaused(bool paused);
     bool getPreferredDisplaySource(GSFrameReg &outSource, uint32_t &outDestFbp) const;
     void latchHostPresentationFrame();
+    // Called on the game thread at each VBlank: presents there when the renderer needs its own thread.
+    void presentOnDrawThread();
+    // The latched frame as a GL texture, when the GPU renderer handed one over.
+    bool latchedHostPresentationTexture(uint32_t &texture, uint32_t &width, uint32_t &height) const;
     bool copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
                                           uint32_t &outWidth,
                                           uint32_t &outHeight,
@@ -223,6 +227,8 @@ private:
     uint32_t m_preferredDisplayDestFbp = 0;
     bool m_hasPreferredDisplaySource = false;
     std::vector<uint8_t> m_hostPresentationFrame;
+    uint32_t m_hostPresentationTexture = 0;
+    void latchHostPresentationFrameNow();
     uint32_t m_hostPresentationWidth = 0;
     uint32_t m_hostPresentationHeight = 0;
     uint32_t m_hostPresentationDisplayFbp = 0;
