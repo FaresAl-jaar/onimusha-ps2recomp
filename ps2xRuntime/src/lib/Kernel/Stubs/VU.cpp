@@ -699,10 +699,10 @@ namespace ps2_stubs
         float m0[16]{}, m1[16]{}, out[16]{};
         if (readVuMatrix4f(rdram, m0Addr, m0) && readVuMatrix4f(rdram, m1Addr, m1))
         {
-            // out = m0 * m1 (first source . second source), matching the
-            // file's mulVuMatrix(lhs,rhs)=lhs.rhs convention and the RotMatrix
-            // / ViewScreenMatrix siblings (first operand on the left).
-            mulVuMatrix(m0, m1, out);
+            // libvu0 sceVu0MulMatrix(m0, m1, m2) loads the rows of m1 into vf4..vf7 and, for each row of m2,
+            // computes m1[0]*row.x + m1[1]*row.y + m1[2]*row.z + m1[3]*row.w: m0 = m2 . m1 (second source on the left).
+            // With the operands the other way round the game's view x projection lost x and y (black 3D scene).
+            mulVuMatrix(m1, m0, out);
             (void)writeVuMatrix4f(rdram, dstAddr, out);
         }
         setReturnS32(ctx, 0);

@@ -94,7 +94,7 @@ void (*g_ps2xHostAudioMix)(int16_t *frames, size_t count) = nullptr;
 // Graphics counters for PS2X_GFX_STATS: 0 MSCAL/MSCNT, 1 XGKICK, 2 GIF packets.
 std::atomic<uint64_t> g_ps2xGfxCounters[8];
 // A VU1 program runs to its end (E bit) like on hardware; the cap only stops a runaway program.
-static constexpr uint32_t kVu1ProgramCycleCap = 1u << 24;
+static const uint32_t kVu1ProgramCycleCap = std::getenv("PS2X_VU1_CYCLE_CAP") ? static_cast<uint32_t>(std::strtoul(std::getenv("PS2X_VU1_CYCLE_CAP"), nullptr, 0)) : (1u << 24);
 
 namespace
 {
@@ -489,7 +489,8 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     if (const char *directory = std::getenv("PS2X_SCANOUT_SHOTS"))
     {
         static uint64_t previousBucket = ~uint64_t{0};
-        const uint64_t bucket = currentTick / 120;
+        static const uint64_t shotEvery = std::getenv("PS2X_SCANOUT_SHOTS_EVERY") ? std::max<uint64_t>(1u, std::strtoull(std::getenv("PS2X_SCANOUT_SHOTS_EVERY"), nullptr, 10)) : 120u;
+        const uint64_t bucket = currentTick / shotEvery;
         static const uint64_t maxBuckets = std::getenv("PS2X_SCANOUT_SHOTS_MAX") ? std::strtoull(std::getenv("PS2X_SCANOUT_SHOTS_MAX"), nullptr, 10) : 60u;
         if (bucket != previousBucket && bucket < maxBuckets && width && height && !s_scratch.empty())
         {
@@ -519,6 +520,55 @@ namespace
     AudioStream s_spuStream{};
     bool s_spuStreamReady = false;
 
+    // The audio device pulls samples on its own thread (raylib stream callback), so a slow host frame no longer
+    // starves it. The SPU2 output is kept about 50 ms ahead; when the game falls behind, what is there is
+    // stretched to the request instead of inserting silence (no clicks), and a backlog beyond 200 ms is dropped.
+    void spuStreamCallback(void *buffer, unsigned int frameCount)
+    {
+        auto *out = static_cast<int16_t *>(buffer);
+        static std::vector<int16_t> scratch;
+        static bool primed = false;
+        constexpr size_t kPrimeFrames = 2400u;   // 50 ms
+        constexpr size_t kBacklogFrames = 9600u; // 200 ms
+        size_t buffered = ps2x::iop::spu2BufferedFrames();
+        if (buffered > kBacklogFrames)
+        {
+            scratch.resize((buffered - kPrimeFrames) * 2u);
+            (void)ps2x::iop::spu2ReadOutput(scratch.data(), buffered - kPrimeFrames);
+            buffered = kPrimeFrames;
+        }
+        if (!primed && buffered >= kPrimeFrames)
+            primed = true;
+        size_t got = 0;
+        if (primed)
+        {
+            scratch.resize(static_cast<size_t>(frameCount) * 2u);
+            got = ps2x::iop::spu2ReadOutput(scratch.data(), frameCount);
+        }
+        if (got == frameCount)
+            std::memcpy(out, scratch.data(), static_cast<size_t>(frameCount) * 2u * sizeof(int16_t));
+        else if (got >= 16u)
+        {
+            // Stretch the frames that are there over the whole request (linear interpolation).
+            for (unsigned i = 0; i < frameCount; ++i)
+            {
+                const float pos = static_cast<float>(i) * static_cast<float>(got - 1u) / static_cast<float>(frameCount - 1u);
+                const size_t i0 = static_cast<size_t>(pos);
+                const size_t i1 = std::min(i0 + 1u, got - 1u);
+                const float t = pos - static_cast<float>(i0);
+                for (int c = 0; c < 2; ++c)
+                    out[i * 2u + c] = static_cast<int16_t>(scratch[i0 * 2u + c] * (1.0f - t) + scratch[i1 * 2u + c] * t);
+            }
+        }
+        else
+        {
+            std::memset(out, 0, static_cast<size_t>(frameCount) * 2u * sizeof(int16_t));
+            primed = false; // ran dry: wait for a fresh lead before playing again
+        }
+        if (g_ps2xHostAudioMix)
+            g_ps2xHostAudioMix(out, frameCount);
+    }
+
     void openSpuStream()
     {
         if (!IsAudioDeviceReady() || std::getenv("PS2X_NO_SPU2_AUDIO"))
@@ -527,23 +577,15 @@ namespace
         s_spuStream = LoadAudioStream(48000u, 16u, 2u);
         s_spuStreamReady = IsAudioStreamValid(s_spuStream);
         if (s_spuStreamReady)
+        {
+            SetAudioStreamCallback(s_spuStream, spuStreamCallback);
             PlayAudioStream(s_spuStream);
+        }
     }
 
     void pumpSpuStream()
     {
-        if (!s_spuStreamReady)
-            return;
-        static int16_t frames[kSpuStreamFrames * 2u];
-        while (IsAudioStreamProcessed(s_spuStream))
-        {
-            const size_t got = ps2x::iop::spu2ReadOutput(frames, kSpuStreamFrames);
-            // Underrun: fill the rest with silence instead of stalling the host loop.
-            std::memset(frames + got * 2u, 0, (kSpuStreamFrames - got) * 2u * sizeof(int16_t));
-            if (g_ps2xHostAudioMix)
-                g_ps2xHostAudioMix(frames, kSpuStreamFrames);
-            UpdateAudioStream(s_spuStream, frames, static_cast<int>(kSpuStreamFrames));
-        }
+        // The stream is fed by spuStreamCallback on the audio thread.
     }
 
     void closeSpuStream()
@@ -1568,7 +1610,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                 extern void ps2xPrintGsDrawStats(uint64_t tick);
                 std::cerr << "[gfx] tick=" << now << " vu1calls=" << g_ps2xGfxCounters[0].exchange(0)
                           << " xgkick=" << g_ps2xGfxCounters[1].exchange(0) << " gifpackets=" << g_ps2xGfxCounters[2].exchange(0) << " xgkickdone=" << g_ps2xGfxCounters[3].exchange(0)
-                          << " xyzf2_packed_adc=" << g_ps2xGfxCounters[4].exchange(0) << " xyzf2_packed_kick=" << g_ps2xGfxCounters[5].exchange(0) << std::endl;
+                          << " xyzf2_packed_adc=" << g_ps2xGfxCounters[4].exchange(0) << " xyzf2_packed_kick=" << g_ps2xGfxCounters[5].exchange(0) << " vu1cap=" << g_ps2xGfxCounters[6].exchange(0) << std::endl;
                 ps2xPrintGsDrawStats(now);
                 gfxStart = now;
             }

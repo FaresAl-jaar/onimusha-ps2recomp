@@ -148,7 +148,9 @@ struct alignas(16) R5900Context
     {
         std::memset(this, 0, sizeof(*this));
 
-        // Initialize VU0 registers
+        // Initialize VU0 registers. vf0 is the constant (0, 0, 0, 1) on the hardware; libvu0 builds unit matrices
+        // and homogeneous vectors from it, so a context with vf0 = 0 turns every such matrix into zeros.
+        vu0_vf[0] = _mm_set_ps(1.0f, 0.0f, 0.0f, 0.0f);
         vu0_q = 1.0f; // Q register usually initialized to 1.0
 
         // Reset COP0 registers

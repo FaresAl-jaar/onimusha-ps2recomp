@@ -1458,12 +1458,12 @@ VU1Interpreter::InstructionUsage VU1Interpreter::decodeLowerUsage(uint32_t lower
     case 0x74:
     case 0x75:
     case 0x76:
-    case 0x77:
     case 0x78:
     case 0x79:
     case 0x7A:
     case 0x7C:
     case 0x7D:
+    case 0x7E:
         if (m_unit == Unit::VU0)
         {
             usage.reserved = true;
@@ -1477,7 +1477,7 @@ VU1Interpreter::InstructionUsage VU1Interpreter::decodeLowerUsage(uint32_t lower
             break;
         case 0x71:
         case 0x72:
-        case 0x77:
+        case 0x79: // ERSQRT
             usage.latency = 18u;
             break;
         case 0x73:
@@ -1485,7 +1485,7 @@ VU1Interpreter::InstructionUsage VU1Interpreter::decodeLowerUsage(uint32_t lower
             break;
         case 0x74:
         case 0x75:
-        case 0x7C:
+        case 0x7D: // EATAN
             usage.latency = 54u;
             break;
         case 0x76:
@@ -1493,10 +1493,10 @@ VU1Interpreter::InstructionUsage VU1Interpreter::decodeLowerUsage(uint32_t lower
         case 0x7A:
             usage.latency = 12u;
             break;
-        case 0x79:
+        case 0x7C: // ESIN
             usage.latency = 29u;
             break;
-        case 0x7D:
+        case 0x7E: // EEXP
             usage.latency = 44u;
             break;
         default:
@@ -1596,6 +1596,10 @@ VU1Interpreter::DecodedInstructionPair VU1Interpreter::getDecodedInstructionPair
 
 void VU1Interpreter::reportReservedInstruction(bool upper, uint32_t instruction)
 {
+    static uint32_t printed = 0;
+    if (printed++ < 20u)
+        std::fprintf(stderr, "[vu%u reserved %s] pc=0x%x instruction=0x%08x\n", m_unit == Unit::VU1 ? 1u : 0u, upper ? "upper" : "lower",
+                     m_state.pc, instruction);
     RUNTIME_ERROR(
         "[VU" << (m_unit == Unit::VU1 ? "1" : "0")
               << " reserved " << (upper ? "upper" : "lower")
@@ -1651,10 +1655,45 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     m_activeGs = &gs;
     m_activeMemory = memory;
 
+    // PS2X_TRACE_VU1=<n>: the n-th VU1 program run is traced (pairs executed) and VU1 code and data saved.
+    static const long long traceRun = std::getenv("PS2X_TRACE_VU1") ? std::atoll(std::getenv("PS2X_TRACE_VU1")) : -1;
+    static long long runCount = 0;
+    bool tracing = false;
+    if (m_unit == Unit::VU1 && traceRun >= 0 && runCount++ == traceRun)
+    {
+        tracing = true;
+        if (FILE *f = std::fopen("/tmp/vu1_code.bin", "wb")) { std::fwrite(vuCode, 1, codeSize, f); std::fclose(f); }
+        if (FILE *f = std::fopen("/tmp/vu1_data.bin", "wb")) { std::fwrite(vuData, 1, dataSize, f); std::fclose(f); }
+        if (memory)
+            if (FILE *f = std::fopen("/tmp/ee_ram.bin", "wb")) { std::fwrite(memory->getRDRAM(), 1, PS2_RAM_SIZE, f); std::fclose(f); }
+        std::fprintf(stderr, "[vu1trace] start pc=0x%x top=%u itop=%u\n", m_state.pc, m_state.top, m_state.itop);
+        for (int r = 0; r < 32; ++r)
+            std::fprintf(stderr, "[vu1trace] vf%d = %g %g %g %g\n", r, m_state.vf[r][0], m_state.vf[r][1], m_state.vf[r][2], m_state.vf[r][3]);
+        for (int r = 0; r < 16; ++r)
+            std::fprintf(stderr, "[vu1trace] vi%d = %d\n", r, m_state.vi[r]);
+    }
+    uint32_t traced = 0;
     const int previousRoundingMode = std::fegetround();
     const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
     const uint64_t budgetEnd = m_cycle + maxCycles;
     bool programEnded = false;
+    struct CapReport
+    {
+        VU1Interpreter &vu;
+        uint64_t end;
+        uint32_t startPc;
+        ~CapReport()
+        {
+            if (vu.m_cycle >= end && vu.m_unit == Unit::VU1)
+            {
+                extern std::atomic<uint64_t> g_ps2xGfxCounters[8];
+                g_ps2xGfxCounters[6].fetch_add(1, std::memory_order_relaxed);
+                static uint32_t printed = 0;
+                if (printed++ < 10u)
+                    std::fprintf(stderr, "[vu1] program from pc=0x%x hit the cycle cap, now at pc=0x%x\n", startPc, vu.m_state.pc);
+            }
+        }
+    } capReport{*this, budgetEnd, m_state.pc};
     while (m_cycle < budgetEnd && !m_stopRequested)
     {
         commitReadyPipelines();
@@ -1662,6 +1701,8 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             break;
 
         const DecodedInstructionPair decoded = getDecodedInstructionPairForPc(vuCode, codeSize, memory, m_state.pc);
+        if (tracing && traced++ < 6000u)
+            std::fprintf(stderr, "[vu1trace] pc=%04x up=%08x lo=%08x\n", m_state.pc, decoded.upper, decoded.lower);
         if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
         {
             reportReservedInstruction(decoded.upperUsage.reserved, decoded.upperUsage.reserved ? decoded.upper : decoded.lower);
