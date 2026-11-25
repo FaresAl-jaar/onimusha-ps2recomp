@@ -1091,7 +1091,12 @@ void GSNativeBackend::appendPrimitive(const GSPrimitiveBatch &batch)
 
     const GSContext &context = state.context;
     const float ofx = static_cast<float>(context.xyoffset.ofx) / 16.0f;
-    const float ofy = static_cast<float>(context.xyoffset.ofy) / 16.0f;
+    // Interlaced games draw one field half a line lower than the other (OFY differs by 8, Onimusha DoD: 30976
+    // and 30984). Shown on a progressive screen both pictures jump half a line every frame (shaking text). The
+    // half line is dropped, as PCSX2 does without its interlace offset; PS2X_GS_KEEP_FIELD_OFFSET=1 keeps it.
+    static const bool s_keepFieldOffset = std::getenv("PS2X_GS_KEEP_FIELD_OFFSET") != nullptr;
+    const uint32_t ofyRaw = s_keepFieldOffset ? context.xyoffset.ofy : (context.xyoffset.ofy & ~0xFu);
+    const float ofy = static_cast<float>(ofyRaw) / 16.0f;
     const double zScale = depthScale(context.zbuf.psm);
     const float texWidth = static_cast<float>(1u << std::min<uint32_t>(context.tex0.tw, 10u));
     const float texHeight = static_cast<float>(1u << std::min<uint32_t>(context.tex0.th, 10u));

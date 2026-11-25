@@ -20,6 +20,7 @@
 #include "rlgl.h"
 // GLFW is inside raylib: only these two calls are needed here.
 extern "C" void *glfwGetCurrentContext(void);
+extern std::atomic<uint64_t> g_ps2xVblankCount; // EeScheduler.cpp
 extern "C" void glfwGetFramebufferSize(void *window, int *width, int *height);
 #if defined(PS2X_HAVE_NATIVE_GS)
 #include "runtime/gs/gs_native_backend.h"
@@ -530,8 +531,27 @@ namespace
     // The audio device pulls samples on its own thread (raylib stream callback), so a slow host frame no longer
     // starves it. The SPU2 output is kept about 50 ms ahead; when the game falls behind, what is there is
     // stretched to the request instead of inserting silence (no clicks), and a backlog beyond 200 ms is dropped.
+    std::atomic<uint64_t> s_audioDrops{0}, s_audioStretches{0}, s_audioDry{0};
+
     void spuStreamCallback(void *buffer, unsigned int frameCount)
     {
+        // Every 10 s the log gets the game's speed (VBlanks per second, 60 = full speed) and the audio health.
+        {
+            static auto s_last = std::chrono::steady_clock::now();
+            static uint64_t s_lastVblanks = 0;
+            const auto now = std::chrono::steady_clock::now();
+            const double seconds = std::chrono::duration<double>(now - s_last).count();
+            if (seconds >= 10.0)
+            {
+                const uint64_t vblanks = g_ps2xVblankCount.load(std::memory_order_relaxed);
+                std::fprintf(stderr, "[speed] %.1f vblanks/s (60 = full speed), audio: %llu backlog drops, %llu stretched, %llu dry, %zu frames buffered\n",
+                             static_cast<double>(vblanks - s_lastVblanks) / seconds,
+                             static_cast<unsigned long long>(s_audioDrops.exchange(0)), static_cast<unsigned long long>(s_audioStretches.exchange(0)),
+                             static_cast<unsigned long long>(s_audioDry.exchange(0)), ps2x::iop::spu2BufferedFrames());
+                s_last = now;
+                s_lastVblanks = vblanks;
+            }
+        }
         auto *out = static_cast<int16_t *>(buffer);
         static std::vector<int16_t> scratch;
         static bool primed = false;
@@ -543,6 +563,7 @@ namespace
             scratch.resize((buffered - kPrimeFrames) * 2u);
             (void)ps2x::iop::spu2ReadOutput(scratch.data(), buffered - kPrimeFrames);
             buffered = kPrimeFrames;
+            ++s_audioDrops;
         }
         if (!primed && buffered >= kPrimeFrames)
             primed = true;
@@ -557,6 +578,7 @@ namespace
         else if (got >= 16u)
         {
             // Stretch the frames that are there over the whole request (linear interpolation).
+            ++s_audioStretches;
             for (unsigned i = 0; i < frameCount; ++i)
             {
                 const float pos = static_cast<float>(i) * static_cast<float>(got - 1u) / static_cast<float>(frameCount - 1u);
@@ -570,6 +592,8 @@ namespace
         else
         {
             std::memset(out, 0, static_cast<size_t>(frameCount) * 2u * sizeof(int16_t));
+            if (primed)
+                ++s_audioDry;
             primed = false; // ran dry: wait for a fresh lead before playing again
         }
         if (g_ps2xHostAudioMix)

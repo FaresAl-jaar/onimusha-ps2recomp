@@ -10,6 +10,8 @@
 #include <limits>
 #include <stdexcept>
 
+std::atomic<uint64_t> g_ps2xVblankCount{0};
+
 namespace
 {
     constexpr int KE_OK = 0;
@@ -1967,6 +1969,7 @@ void EeScheduler::processEvent(const EeEvent &event)
         m_vsyncFlagAddress = 0u;
         m_vsyncTickAddress = 0u;
         m_runtime.gs().presentOnDrawThread();
+        g_ps2xVblankCount.fetch_add(1, std::memory_order_relaxed);
         completeVSync(m_vsyncTick);
         if (m_gsVSyncCallback != 0u && m_runtime.hasFunction(m_gsVSyncCallback))
         {
