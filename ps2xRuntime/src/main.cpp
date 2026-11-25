@@ -15,10 +15,14 @@
 #include <exception>
 #include <algorithm>
 #include <cstdlib>
+#include <cstdint>
 #include <cstdio>
 #include <vector>
 #if defined(_WIN32)
 extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void *window, const char *text, const char *caption, unsigned type);
+// Per monitor DPI awareness: the window gets the monitor's real pixels instead of a picture Windows scales up
+// (blurry, and cropped in fullscreen on displays set to 125 % or more).
+extern "C" __declspec(dllimport) int __stdcall SetProcessDpiAwarenessContext(void *context);
 #endif
 
 #if defined(__ANDROID__)
@@ -246,6 +250,9 @@ int main(int argc, char *argv[])
             std::setvbuf(stdout, nullptr, _IOLBF, 4096);
         }
     }
+#endif
+#if defined(_WIN32)
+    SetProcessDpiAwarenessContext(reinterpret_cast<void *>(static_cast<intptr_t>(-4))); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 #endif
     setupTerminateLogger();
 

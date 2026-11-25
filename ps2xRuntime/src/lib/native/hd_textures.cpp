@@ -265,7 +265,8 @@ namespace ps2x::native
         {
             if (!mz_zip_reader_init_file(&m_impl->archive, pathText.c_str(), 0))
             {
-                std::fprintf(stderr, "[hd] %s is not a zip\n", pathText.c_str());
+                std::fprintf(stderr, "[hd] cannot open %s as a zip: %s\n", pathText.c_str(),
+                             mz_zip_get_error_string(mz_zip_get_last_error(&m_impl->archive)));
                 m_impl.reset();
                 return false;
             }

@@ -17,6 +17,10 @@
 #include "ps2_host_backend.h"
 #include "ps2_iop_host.h"
 #include "ps2x/iop/iop_subsystem.h"
+#include "rlgl.h"
+// GLFW is inside raylib: only these two calls are needed here.
+extern "C" void *glfwGetCurrentContext(void);
+extern "C" void glfwGetFramebufferSize(void *window, int *width, int *height);
 #if defined(PS2X_HAVE_NATIVE_GS)
 #include "runtime/gs/gs_native_backend.h"
 #endif
@@ -885,10 +889,6 @@ bool PS2Runtime::initialize(const char *title)
         {
             const PS2HostSettings &host = ps2xHostSettings();
             unsigned flags = FLAG_WINDOW_RESIZABLE;
-#if defined(_WIN32)
-            // Without it Windows scales the window by the display's DPI setting: a blurry, cropped picture.
-            flags |= FLAG_WINDOW_HIGHDPI;
-#endif
             if (host.vsync)
                 flags |= FLAG_VSYNC_HINT;
             SetConfigFlags(flags);
@@ -927,8 +927,12 @@ bool PS2Runtime::initialize(const char *title)
             const int monitorHeight = GetMonitorHeight(monitor);
             if (host.mode == "fullscreen" || host.mode == "borderless")
             {
-                SetWindowMonitor(monitor);
-                ToggleBorderlessWindowed();
+                // A window without frame that covers the monitor: no video mode switch, Alt+Tab works, and the
+                // picture always has the monitor's real size.
+                const Vector2 origin = GetMonitorPosition(monitor);
+                SetWindowState(FLAG_WINDOW_UNDECORATED);
+                SetWindowPosition(static_cast<int>(origin.x), static_cast<int>(origin.y));
+                SetWindowSize(monitorWidth, monitorHeight);
             }
             else
             {
@@ -945,6 +949,9 @@ bool PS2Runtime::initialize(const char *title)
                     SetWindowPosition(static_cast<int>(origin.x) + (monitorWidth - w) / 2, static_cast<int>(origin.y) + (monitorHeight - h) / 2);
                 }
             }
+            std::fprintf(stderr, "[window] mode=%s monitor=%d %dx%d, screen %dx%d, render %dx%d, dpi scale %.2f\n", host.mode.c_str(), monitor,
+                         monitorWidth, monitorHeight, GetScreenWidth(), GetScreenHeight(), GetRenderWidth(), GetRenderHeight(),
+                         GetWindowScaleDPI().x);
             SetExitKey(KEY_NULL); // Escape belongs to the game; close with the window button or Alt+F4
         }
         InitAudioDevice();
@@ -2812,6 +2819,24 @@ void PS2Runtime::run()
         }
 
         BeginDrawing();
+        {
+            // raylib keeps the viewport of the window's first size until a resize event arrives, and a window
+            // resized right after creation (fullscreen, fitting the monitor) never sends one on some systems:
+            // the picture is then drawn for the wrong size, cropped or off screen. The viewport follows the real
+            // framebuffer every frame instead.
+            int fbWidth = 0, fbHeight = 0;
+            glfwGetFramebufferSize(glfwGetCurrentContext(), &fbWidth, &fbHeight);
+            static const bool s_noFix = std::getenv("PS2X_NO_VIEWPORT_FIX") != nullptr;
+            if (fbWidth > 0 && fbHeight > 0 && !s_noFix)
+            {
+                rlViewport(0, 0, fbWidth, fbHeight);
+                rlMatrixMode(RL_PROJECTION);
+                rlLoadIdentity();
+                rlOrtho(0.0, static_cast<double>(GetScreenWidth()), static_cast<double>(GetScreenHeight()), 0.0, 0.0, 1.0);
+                rlMatrixMode(RL_MODELVIEW);
+                rlLoadIdentity();
+            }
+        }
         ClearBackground(BLACK);
         const float srcWidth = static_cast<float>(std::max<uint32_t>(1u, presentWidth));
         const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
@@ -2838,7 +2863,24 @@ void PS2Runtime::run()
         }
         // Alt+Enter switches between window and fullscreen.
         if ((IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) && IsKeyPressed(KEY_ENTER))
-            ToggleBorderlessWindowed();
+        {
+            const int monitor = GetCurrentMonitor();
+            const int mw = GetMonitorWidth(monitor), mh = GetMonitorHeight(monitor);
+            const Vector2 origin = GetMonitorPosition(monitor);
+            if (IsWindowState(FLAG_WINDOW_UNDECORATED))
+            {
+                const int w = mw * 3 / 4, h = mh * 3 / 4;
+                ClearWindowState(FLAG_WINDOW_UNDECORATED);
+                SetWindowSize(w, h);
+                SetWindowPosition(static_cast<int>(origin.x) + (mw - w) / 2, static_cast<int>(origin.y) + (mh - h) / 2);
+            }
+            else
+            {
+                SetWindowState(FLAG_WINDOW_UNDECORATED);
+                SetWindowPosition(static_cast<int>(origin.x), static_cast<int>(origin.y));
+                SetWindowSize(mw, mh);
+            }
+        }
         const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
         const Rectangle dstRect{
             (screenWidth - dstWidth) * 0.5f,

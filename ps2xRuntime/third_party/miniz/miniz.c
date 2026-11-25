@@ -3714,7 +3714,7 @@ static mz_bool mz_zip_reader_read_central_dir(mz_zip_archive *pZip, mz_uint flag
         if (zip64_size_of_end_of_central_dir_record < (MZ_ZIP64_END_OF_CENTRAL_DIR_HEADER_SIZE - 12))
             return mz_zip_set_error(pZip, MZ_ZIP_INVALID_HEADER_OR_CORRUPTED);
 
-        if (zip64_total_num_of_disks != 1U)
+        if (zip64_total_num_of_disks > 1U) /* ps2x: some writers store 0 here for a single disk archive */
             return mz_zip_set_error(pZip, MZ_ZIP_UNSUPPORTED_MULTIDISK);
 
         /* Check for miniz's practical limits */
@@ -3868,7 +3868,7 @@ static mz_bool mz_zip_reader_read_central_dir(mz_zip_archive *pZip, mz_uint flag
             }
 
             disk_index = MZ_READ_LE16(p + MZ_ZIP_CDH_DISK_START_OFS);
-            if ((disk_index == MZ_UINT16_MAX) || ((disk_index != num_this_disk) && (disk_index != 1)))
+            if ((disk_index != MZ_UINT16_MAX) && (disk_index != num_this_disk) && (disk_index != 1)) /* ps2x: 0xFFFF = in the zip64 extra field */
                 return mz_zip_set_error(pZip, MZ_ZIP_UNSUPPORTED_MULTIDISK);
 
             if (comp_size != MZ_UINT32_MAX)

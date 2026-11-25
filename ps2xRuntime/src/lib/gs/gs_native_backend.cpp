@@ -2934,7 +2934,9 @@ bool GSNativeBackend::circuitSource(int circuit, uint64_t dispfb, uint64_t displ
 
 bool GSNativeBackend::presentOnGpu(const GSPresentationRequest &request, PresentationFrame &frame)
 {
-    const bool fieldMode = (request.smode2 & 0x3u) == 0x3u;
+    // As the CPU presenter reads it: interlaced (INT) and not FFMD. Onimusha DoD (SMODE2 3) draws a 224 line buffer
+    // per field and shows all of it; reading half of it cut the lower half of every picture off.
+    const bool fieldMode = (request.smode2 & 0x3u) == 0x1u;
     const uint64_t pmode = request.pmode;
     const bool en1 = (pmode & 0x1u) != 0u, en2 = (pmode & 0x2u) != 0u;
     const bool mmod = (pmode >> 5 & 0x1u) != 0u, slbg = (pmode >> 7 & 0x1u) != 0u;
@@ -3126,7 +3128,9 @@ PresentationFrame GSNativeBackend::Present(const GSPresentationRequest &request)
     if (!cpuPresent && presentOnGpu(request, frame))
         return frame;
     // Interlaced field mode (SMODE2 INT and FFMD): the game draws one field of half the lines; show each line twice.
-    const bool fieldMode = (request.smode2 & 0x3u) == 0x3u;
+    // As the CPU presenter reads it: interlaced (INT) and not FFMD. Onimusha DoD (SMODE2 3) draws a 224 line buffer
+    // per field and shows all of it; reading half of it cut the lower half of every picture off.
+    const bool fieldMode = (request.smode2 & 0x3u) == 0x1u;
     // PMODE: EN1, EN2, MMOD (blend with ALP rather than circuit 1's alpha), SLBG (blend over BGCOLOR rather than
     // circuit 2), ALP. Circuit 1 is blended over circuit 2 (or the background colour).
     const uint64_t pmode = request.pmode;
