@@ -1783,6 +1783,18 @@ void PS2Runtime::executeVU0Microprogram(uint8_t *rdram, R5900Context *ctx, uint3
                   m_gs, &m_memory,
                   startPC, 0u, ctx->vu0_itop, 4096);
     copyVu0StateToContext(m_vu0.state(), ctx);
+    if (static const bool s_log = std::getenv("PS2X_VU0_LOG") != nullptr; s_log)
+    {
+        static uint64_t s_calls = 0, s_cut = 0;
+        ++s_calls;
+        const bool cut = m_vu0.state().cycles >= 4096u;
+        s_cut += cut ? 1u : 0u;
+        if (cut && s_cut <= 20u)
+            std::fprintf(stderr, "[vu0] micro at 0x%x hit the 4096 cycle budget (pc now 0x%x)\n", startPC, m_vu0.state().pc);
+        if ((s_calls % 20000u) == 0u)
+            std::fprintf(stderr, "[vu0] %llu VCALLMS, %llu cut by the budget\n", static_cast<unsigned long long>(s_calls),
+                         static_cast<unsigned long long>(s_cut));
+    }
 }
 
 void PS2Runtime::vu0StartMicroProgram(uint8_t *rdram, R5900Context *ctx, uint32_t address)

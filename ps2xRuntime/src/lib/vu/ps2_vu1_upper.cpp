@@ -7,6 +7,21 @@
 
 namespace
 {
+    // normalizeOperand() for four lanes: denormals become signed zero, Inf/NaN become signed FLT_MAX.
+    // Plain integer ops on the bit patterns, so the compiler can vectorize it on any target.
+    inline void normalizeOperands4(const float *in, float *out)
+    {
+        uint32_t bits[4];
+        std::memcpy(bits, in, sizeof(bits));
+        for (uint32_t &b : bits)
+        {
+            const uint32_t exponent = b & 0x7F800000u;
+            const uint32_t sign = b & 0x80000000u;
+            b = exponent == 0u ? sign : exponent == 0x7F800000u ? (sign | 0x7F7FFFFFu) : b;
+        }
+        std::memcpy(out, bits, sizeof(bits));
+    }
+
     int32_t vuFloatToInt(float value, float scale)
     {
         const double scaled = static_cast<double>(value) * static_cast<double>(scale);
@@ -34,12 +49,9 @@ void VU1Interpreter::execUpper(uint32_t instr)
     float normalizedVs[4];
     float normalizedVt[4];
     float normalizedAcc[4];
-    for (uint32_t component = 0; component < 4u; ++component)
-    {
-        normalizedVs[component] = normalizeOperand(m_state.vf[fs][component]);
-        normalizedVt[component] = normalizeOperand(m_state.vf[ft][component]);
-        normalizedAcc[component] = normalizeOperand(m_state.acc[component]);
-    }
+    normalizeOperands4(m_state.vf[fs], normalizedVs);
+    normalizeOperands4(m_state.vf[ft], normalizedVt);
+    normalizeOperands4(m_state.acc, normalizedAcc);
     const float *vs = normalizedVs;
     const float *vt = normalizedVt;
     const float *acc = normalizedAcc;
