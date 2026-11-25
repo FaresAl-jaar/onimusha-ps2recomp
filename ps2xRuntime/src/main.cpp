@@ -15,6 +15,7 @@
 #include <exception>
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
 #include <vector>
 #if defined(_WIN32)
 extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void *window, const char *text, const char *caption, unsigned type);
@@ -230,6 +231,21 @@ int main(int argc, char *argv[])
 {
 #if defined(__ANDROID__)
     redirectStdioToLogcat();
+#endif
+#if defined(_WIN32)
+    // Without a console the log goes to onimusha.log next to the exe (PS2X_LOG_FILE=off keeps it on stderr).
+    if (const char *logEnv = std::getenv("PS2X_LOG_FILE"); !logEnv || std::string(logEnv) != "off")
+    {
+        std::error_code ec;
+        const std::filesystem::path exeDir = argc > 0 ? std::filesystem::absolute(argv[0], ec).parent_path() : std::filesystem::path{};
+        const std::filesystem::path logPath = (logEnv && *logEnv) ? std::filesystem::path(logEnv) : exeDir / "onimusha.log";
+        if (std::freopen(logPath.string().c_str(), "w", stderr))
+        {
+            std::setvbuf(stderr, nullptr, _IONBF, 0);
+            std::freopen(logPath.string().c_str(), "a", stdout);
+            std::setvbuf(stdout, nullptr, _IOLBF, 4096);
+        }
+    }
 #endif
     setupTerminateLogger();
 
