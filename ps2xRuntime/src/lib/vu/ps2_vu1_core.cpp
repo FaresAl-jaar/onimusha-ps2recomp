@@ -655,6 +655,20 @@ void VU1Interpreter::queueP(float value, uint32_t latency)
 
 void VU1Interpreter::queueStore(uint32_t address, const uint32_t words[4], uint8_t laneMask)
 {
+    // PS2X_VU1_WATCH=<qword address>: who stores there (pc, TOP, a few VI registers).
+    if (static const long s_watch = [] { const char *v = std::getenv("PS2X_VU1_WATCH"); return v ? std::strtol(v, nullptr, 0) : -1L; }();
+        s_watch >= 0 && m_unit == Unit::VU1 && ((address >> 4) & 0x3FFu) == static_cast<uint32_t>(s_watch))
+    {
+        static uint32_t s_logged = 0;
+        if (s_logged++ < 60u)
+        {
+            float f[4];
+            std::memcpy(f, words, sizeof(f));
+            std::fprintf(stderr, "[vu1watch] store qw 0x%x from pc=0x%x top=%u itop=%u vi1=%d vi2=%d vi3=%d vi8=%d vi9=%d vi14=%d value=%g %g %g %g\n",
+                         (address >> 4) & 0x3FFu, m_state.pc, m_state.top, m_state.itop, m_state.vi[1], m_state.vi[2], m_state.vi[3],
+                         m_state.vi[8], m_state.vi[9], m_state.vi[14], f[0], f[1], f[2], f[3]);
+        }
+    }
     for (PendingStore &store : m_storePipeline)
     {
         if (!store.valid)
@@ -1656,6 +1670,15 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     m_activeMemory = memory;
 
     // PS2X_TRACE_VU1=<n>: the n-th VU1 program run is traced (pairs executed) and VU1 code and data saved.
+    if (static const bool s_check = std::getenv("PS2X_VU1_CHECK34") != nullptr; s_check && m_unit == Unit::VU1 && dataSize >= 0x400u * 16u)
+    {
+        static uint64_t s_runs = 0, s_bad = 0;
+        ++s_runs;
+        if (std::memcmp(vuData + 0x3f4u * 16u, vuData + 0x3f1u * 16u, 16u) == 0 &&
+            std::memcmp(vuData + 0x3f1u * 16u, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16u) != 0 && s_bad++ < 30u)
+            std::fprintf(stderr, "[vu1check] run %llu pc=0x%x: qw 0x3f4 equals 0x3f1 at program start (top=%u itop=%u)\n",
+                         static_cast<unsigned long long>(s_runs), m_state.pc, m_state.top, m_state.itop);
+    }
     static const long long traceRun = std::getenv("PS2X_TRACE_VU1") ? std::atoll(std::getenv("PS2X_TRACE_VU1")) : -1;
     static long long runCount = 0;
     bool tracing = false;

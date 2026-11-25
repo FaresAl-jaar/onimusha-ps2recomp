@@ -1,6 +1,7 @@
 // Based on Blackline Interactive implementation
 #include "runtime/ps2_memory.h"
 #include <cstring>
+#include <unordered_map>
 
 enum VIFCmd : uint8_t
 {
@@ -368,6 +369,23 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         // Track most-recent command for VIFn_CODE emulation.
         vif1_regs.code = cmd;
         vif1_regs.num = num;
+        static uint32_t s_ring[24] = {};
+        static uint32_t s_ringPos = 0;
+        s_ring[s_ringPos++ % 24u] = cmd;
+        if (static const bool s_check = std::getenv("PS2X_VU1_CHECK34") != nullptr;
+            s_check && opcode == 0x6c && imm == 0x3f0 && num == 16 && (vif1_regs.cycle & 0xFFFFu) != 0x0101u &&
+            (vif1_regs.cycle & 0xFFu) != ((vif1_regs.cycle >> 8) & 0xFFu))
+        {
+            static uint32_t s_dumps = 0;
+            if (s_dumps++ < 4u)
+            {
+                std::fprintf(stderr, "[vif1ring] matrix unpack with cycle 0x%04x, last VIF codes (oldest first), %u bytes in this transfer, at %u:",
+                             vif1_regs.cycle & 0xFFFFu, sizeBytes, pos - 4u);
+                for (uint32_t i = 0; i < 24u; ++i)
+                    std::fprintf(stderr, " %08x", s_ring[(s_ringPos + i) % 24u]);
+                std::fprintf(stderr, "\n");
+            }
+        }
         if (irq)
             vif1_regs.stat |= (1u << 11); // INT
 
@@ -584,6 +602,13 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 cl = 1u;
             if (wl == 0u)
                 wl = 1u;
+            // Onimusha DoD: the camera matrices (clip and screen, UNPACK V4-32 of 16 qwords to 0x3f0) follow the last
+            // object's STCYCL 4,1 in our VIF stream, which would spread them over every fourth qword and leave the
+            // screen matrix's first row as the clip matrix's second (every vertex off screen, every one ADC). They
+            // are written linearly. PS2X_VIF_MATRIX_SKIP=1 keeps the write cycle (to find the real cause).
+            if (static const bool s_keepCycle = std::getenv("PS2X_VIF_MATRIX_SKIP") != nullptr;
+                !s_keepCycle && (imm & 0x3FFu) == 0x3f0u && num == 16u && vn == 3u && vl == 0u && !maskEnable)
+                cl = wl = 1u;
 
             uint32_t sourceVectorCount = writeVectorCount;
             if (cl < wl)
@@ -604,6 +629,47 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 
             const bool zeroExtend = (imm & 0x4000u) != 0u;
 
+            if (static const bool s_vifLog = std::getenv("PS2X_VIF_LOG") != nullptr; s_vifLog)
+            {
+                static uint64_t s_unpacks = 0, s_split = 0;
+                ++s_unpacks;
+                const bool split = pos + totalBytes > sizeBytes;
+                s_split += split ? 1u : 0u;
+                if (split && s_split <= 50u)
+                    std::fprintf(stderr, "[vif1] UNPACK split over the transfer: vu=0x%x num=%u vn=%u vl=%u bytes=%u at %zu of %u (cycle cl=%u wl=%u)\n",
+                                 vuAddr, writeVectorCount, vn, vl, totalBytes, static_cast<size_t>(pos), sizeBytes, cl, wl);
+                if (vuAddr <= 0x3f4u && vuAddr + writeVectorCount > 0x3f4u)
+                {
+                    static uint32_t s_logged = 0;
+                    static std::unordered_map<uint64_t, uint32_t> s_kinds;
+                    const uint64_t kind = static_cast<uint64_t>(vuAddr) << 16 | writeVectorCount << 4 | vn << 2 | vl;
+                    if (!split && writeVectorCount == 16u && vuAddr == 0x3f0u && vl == 0u && vn == 3u)
+                    {
+                        static uint32_t s_seen = 0;
+                        float r1[4], r4[4];
+                        std::memcpy(r1, data + pos + 16u, 16u);
+                        std::memcpy(r4, data + pos + 64u, 16u);
+                        static float s_last[4] = {1e30f, 0, 0, 0};
+                        ++s_seen;
+                        const bool changed = std::memcmp(s_last, r4, 16) != 0;
+                        std::memcpy(s_last, r4, 16);
+                        static uint32_t s_changes = 0;
+                        if (changed && s_seen > 9000u && s_changes++ < 60u)
+                            std::fprintf(stderr, "[vif1] matrix packet #%u from EE: clip row1 %g %g %g %g | screen row0 %g %g %g %g%s\n", s_seen,
+                                         r1[0], r1[1], r1[2], r1[3], r4[0], r4[1], r4[2], r4[3],
+                                         std::memcmp(r1, r4, 16) == 0 ? "  SAME" : "");
+                    }
+                    if (s_kinds[kind]++ < 3u && s_logged++ < 200u)
+                    {
+                        float q4[4] = {};
+                        if (!split)
+                            std::memcpy(q4, data + pos + (0x3f4u - vuAddr) * bytesPerVector, std::min<uint32_t>(16u, bytesPerVector));
+                        std::fprintf(stderr, "[vif1] UNPACK over 0x3f4: vu=0x%x num=%u vn=%u vl=%u cl=%u wl=%u mask=%d split=%d src[0x3f4]=%g %g %g %g (unpacks %llu, split %llu)\n",
+                                     vuAddr, writeVectorCount, vn, vl, cl, wl, maskEnable ? 1 : 0, split ? 1 : 0, q4[0], q4[1], q4[2], q4[3],
+                                     static_cast<unsigned long long>(s_unpacks), static_cast<unsigned long long>(s_split));
+                    }
+                }
+            }
             if (m_vu1Data && totalBytes > 0 && pos + totalBytes <= sizeBytes)
             {
                 const uint8_t *srcBase = data + pos;
@@ -800,6 +866,14 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 
                     std::memcpy(m_vu1Data + destOff, lanes, sizeof(lanes));
                 }
+            }
+            if (static const bool s_check = std::getenv("PS2X_VU1_CHECK34") != nullptr; s_check && m_vu1Data)
+            {
+                static uint32_t s_bad = 0;
+                if (std::memcmp(m_vu1Data + 0x3f4u * 16u, m_vu1Data + 0x3f1u * 16u, 16u) == 0 &&
+                    std::memcmp(m_vu1Data + 0x3f1u * 16u, "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0", 16u) != 0 && s_bad++ < 30u)
+                    std::fprintf(stderr, "[vu1check] after UNPACK vu=0x%x num=%u vn=%u vl=%u cl=%u wl=%u mask=%d mode=%u: qw 0x3f4 equals 0x3f1\n",
+                                 vuAddr, writeVectorCount, vn, vl, cl, wl, maskEnable ? 1 : 0, vif1_regs.mode);
             }
             pos += totalBytes;
 
