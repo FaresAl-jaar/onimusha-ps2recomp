@@ -4,6 +4,7 @@
 #include <mutex>
 #include <map>
 #include "runtime/gs/gs_frontend.h"
+#include "runtime/native/native_texture_cache.h"
 extern std::atomic<uint64_t> g_ps2xGfxCounters[8];
 #include "runtime/gs/gs_cpu_backend.h"
 #include "ps2_log.h"
@@ -535,6 +536,38 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
 
 void GS::latchHostPresentationFrame()
 {
+    // A GPU renderer presents on the game thread (presentOnDrawThread); the window only reads what it stored.
+    {
+        std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
+        if (m_backend && m_backend->PresentsOnDrawThread())
+            return;
+    }
+    latchHostPresentationFrameNow();
+}
+
+void GS::presentOnDrawThread()
+{
+    {
+        std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
+        if (!m_backend || !m_backend->PresentsOnDrawThread())
+            return;
+    }
+    latchHostPresentationFrameNow();
+}
+
+bool GS::latchedHostPresentationTexture(uint32_t &texture, uint32_t &width, uint32_t &height) const
+{
+    std::lock_guard<std::mutex> lock(m_presentationMutex);
+    if (!m_hasHostPresentationFrame || m_hostPresentationTexture == 0u)
+        return false;
+    texture = m_hostPresentationTexture;
+    width = m_hostPresentationWidth;
+    height = m_hostPresentationHeight;
+    return true;
+}
+
+void GS::latchHostPresentationFrameNow()
+{
     GSPresentationRequest request{};
     {
         std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
@@ -542,6 +575,7 @@ void GS::latchHostPresentationFrame()
         {
             std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
             m_hostPresentationFrame.clear();
+            m_hostPresentationTexture = 0u;
             m_hasHostPresentationFrame = false;
             m_hostPresentationWidth = m_hostPresentationHeight = 0u;
             return;
@@ -569,6 +603,7 @@ void GS::latchHostPresentationFrame()
     {
         std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
         m_hostPresentationFrame = std::move(frame.pixels);
+        m_hostPresentationTexture = frame.glTexture;
         m_hostPresentationWidth = width;
         m_hostPresentationHeight = height;
         m_hostPresentationDisplayFbp = displayFbp;
@@ -684,6 +719,8 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (!data || sizeBytes < 16 || !m_backend)
         return;
+    if (ps2x::native::uploadsWanted()) // the GPU renderer's texture cache: the game's own uploads
+        ps2x::native::textures().scanGifPacket(data, sizeBytes);
 
     if (tryProcessNativeImageUploadPacket(data, sizeBytes))
         return;
@@ -783,6 +820,8 @@ bool GS::processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes)
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (!data || sizeBytes < 16u || !m_backend)
         return false;
+    if (ps2x::native::uploadsWanted())
+        ps2x::native::textures().scanGifPacket(data, sizeBytes);
 
     if (!validatePackedGifPacket(data, sizeBytes))
         return false;
@@ -826,6 +865,8 @@ void GS::uploadImageNative(uint64_t bitbltbuf,
                            uint32_t sizeBytes)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    if (data && sizeBytes != 0u && (trxdir & 3u) == 0u && ps2x::native::uploadsWanted())
+        ps2x::native::textures().upload(bitbltbuf, trxpos, trxreg, data, sizeBytes);
     uploadImageNativeUnlocked(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
 }
 

@@ -71,6 +71,10 @@ private:
     std::array<ReadVramFunc, kPsmHandlerCount> m_readVramFuncs{};
     std::array<WriteVramFunc, kPsmHandlerCount> m_writeVramFuncs{};
     std::array<uint16_t, 512> m_clut{};
+public:
+    // The GS CLUT buffer (low halves of the entries, then the high halves), for HD texture names.
+    const uint16_t *clutData() const { return m_clut.data(); }
+private:
     std::array<uint32_t, 2> m_clutCbp{};
     GSMem::TexturePageCache m_texturePageCache;
 

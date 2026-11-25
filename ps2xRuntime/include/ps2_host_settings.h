@@ -21,6 +21,8 @@ struct PS2HostSettings
     int resolutionScale = 2;            // windowed: 640x448 times this
     std::string aspectRatio = "auto";   // auto (4:3 as the game draws it), 4:3, 16:9, 21:9, 32:9
     std::string textureFilter = "bilinear";
+    std::string renderer = "gpu";
+    std::string hdTextures;             // HD texture pack (PCSX2 format): zip or folder, empty = off       // "gpu" (OpenGL) or "cpu"
     // audio (0..100)
     int masterVolume = 100;
     // input

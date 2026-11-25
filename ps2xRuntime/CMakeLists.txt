@@ -379,6 +379,8 @@ add_library(ps2_runtime STATIC
     src/lib/game_overrides.cpp
     src/lib/ps2_host_settings.cpp
     src/lib/ps2_host_input.cpp
+    src/lib/native/native_texture_cache.cpp
+    src/lib/native/hd_textures.cpp
     src/lib/games/onimusha_dod_movies.cpp
     src/lib/gs/ps2_gif_arbiter.cpp
     src/lib/ps2_audio.cpp
@@ -505,11 +507,29 @@ if(MSVC)
     target_compile_options(ps2EntryRunner PRIVATE /FS)
 endif()
 
+# GPU renderer (PS2X_GS_RENDERER=native, after TheBozos/PS2Recomp native/gs-backend): OpenGL through raylib's
+# loader, on a GLFW context shared with the window. Its own translation unit, with raylib's internal headers.
+if(NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID)
+    target_sources(ps2_runtime PRIVATE src/lib/gs/gs_native_backend.cpp)
+    set_source_files_properties(src/lib/gs/gs_native_backend.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON
+        INCLUDE_DIRECTORIES "${raylib_SOURCE_DIR}/src;${raylib_SOURCE_DIR}/src/external/glfw/include")
+    target_compile_definitions(ps2_runtime PUBLIC PS2X_HAVE_NATIVE_GS=1)
+endif()
+
 target_include_directories(ps2_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel
 )
 
+# HD texture packs (PCSX2 format): miniz reads the zip, xxHash names the textures.
+enable_language(C)
+add_library(ps2x_miniz STATIC third_party/miniz/miniz.c)
+target_include_directories(ps2x_miniz PUBLIC third_party/miniz)
+set_target_properties(ps2x_miniz PROPERTIES POSITION_INDEPENDENT_CODE ON UNITY_BUILD OFF)
+target_compile_definitions(ps2x_miniz PUBLIC MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
+target_include_directories(ps2_runtime PRIVATE third_party/xxhash)
+target_link_libraries(ps2_runtime PRIVATE ps2x_miniz)
+set_source_files_properties(src/lib/native/hd_textures.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
 target_include_directories(ps2EntryRunner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/runner)
 target_link_libraries(ps2EntryRunner

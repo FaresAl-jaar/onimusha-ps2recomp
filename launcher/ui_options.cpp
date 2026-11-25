@@ -1,4 +1,6 @@
 #include "ui.h"
+#include "launch.h"
+#include <misc/cpp/imgui_stdlib.h>
 #include <algorithm>
 #include <numeric>
 #include <set>
@@ -62,6 +64,26 @@ void graphicsTab(UI& ui) {
         } else ImGui::TextColored(muted(),"Monitor resolution unavailable");
     }
     stringChoice("Texture filtering",g.texture_filter,{"nearest","bilinear"});
+    stringChoice("Renderer",g.renderer,{"gpu","cpu"});
+    ImGui::TextColored(muted(),g.renderer=="gpu" ? "OpenGL on the graphics card (recommended)" : "Software, slow: only for comparison");
+    section(ui,"HD textures");
+    ImGui::TextColored(muted(),"Onimusha HD Remastered Project: select DoD2.5.zip or its unpacked folder.");
+    {
+        const float buttons = ImGui::CalcTextSize("ZIP...Folder...Off").x + 6*ImGui::GetStyle().FramePadding.x + 3*ImGui::GetStyle().ItemSpacing.x;
+        ImGui::SetNextItemWidth(std::max(80.0f,ImGui::GetContentRegionAvail().x-buttons-2));
+        ImGui::InputTextWithHint("##hdpack","No HD textures",&g.hd_textures);
+        for (bool folder : {false,true}) {
+            ImGui::SameLine();
+            if (ImGui::Button(folder ? "Folder..." : "ZIP...")) {
+                try { if (auto path = browseTexturePack(ui.hwnd,folder)) g.hd_textures = *path; }
+                catch (const std::exception& e) { ui.notice(e.what(),true); }
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Off")) g.hd_textures.clear();
+        if (g.renderer!="gpu" && !g.hd_textures.empty())
+            ImGui::TextColored(red(),"HD textures need the GPU renderer.");
+    }
     ImGui::Spacing();
     ImGui::Checkbox("FXAA",&g.fxaa);
     ImGui::Checkbox("Deinterlace",&g.deinterlace);
