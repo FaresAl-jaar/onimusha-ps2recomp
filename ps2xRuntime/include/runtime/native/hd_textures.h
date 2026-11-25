@@ -52,6 +52,8 @@ namespace ps2x::native
 
         // True when the pack has a file for this name (cheap, no loading).
         bool has(const HdTextureName &name) const;
+        // True when some file in the pack has these bits (format and size): others are not worth hashing.
+        bool hasBits(uint32_t bits) const;
         // The image once loaded; until then null, and the first call starts loading it in the background.
         std::shared_ptr<const HdTextureImage> request(const HdTextureName &name);
 

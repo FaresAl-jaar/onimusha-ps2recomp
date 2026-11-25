@@ -885,6 +885,10 @@ bool PS2Runtime::initialize(const char *title)
         {
             const PS2HostSettings &host = ps2xHostSettings();
             unsigned flags = FLAG_WINDOW_RESIZABLE;
+#if defined(_WIN32)
+            // Without it Windows scales the window by the display's DPI setting: a blurry, cropped picture.
+            flags |= FLAG_WINDOW_HIGHDPI;
+#endif
             if (host.vsync)
                 flags |= FLAG_VSYNC_HINT;
             SetConfigFlags(flags);
@@ -921,15 +925,7 @@ bool PS2Runtime::initialize(const char *title)
             const int monitor = std::clamp(host.monitor, 0, std::max(0, GetMonitorCount() - 1));
             const int monitorWidth = GetMonitorWidth(monitor);
             const int monitorHeight = GetMonitorHeight(monitor);
-            if (host.mode == "fullscreen")
-            {
-                SetWindowMonitor(monitor);
-                const int w = host.width > 0 ? host.width : monitorWidth;
-                const int h = host.height > 0 ? host.height : monitorHeight;
-                SetWindowSize(w, h);
-                ToggleFullscreen();
-            }
-            else if (host.mode == "borderless")
+            if (host.mode == "fullscreen" || host.mode == "borderless")
             {
                 SetWindowMonitor(monitor);
                 ToggleBorderlessWindowed();

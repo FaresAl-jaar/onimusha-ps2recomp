@@ -19,6 +19,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -176,6 +177,7 @@ namespace ps2x::native
         };
 
         std::unordered_map<HdTextureName, Entry, NameHash> entries;
+        std::unordered_set<uint32_t> bits;
         std::mutex mutex;
         std::condition_variable wake;
         std::deque<HdTextureName> queue;
@@ -309,6 +311,16 @@ namespace ps2x::native
         std::fprintf(stderr, "[hd] %zu replacement textures for %s from %s\n", m_impl->entries.size(), serial.c_str(),
                      pathText.c_str());
         return true;
+    }
+
+    bool HdTexturePack::hasBits(uint32_t bits) const
+    {
+        if (!m_impl)
+            return false;
+        if (m_impl->bits.empty())
+            for (const auto &[name, entry] : m_impl->entries)
+                m_impl->bits.insert(name.bits);
+        return m_impl->bits.count(bits) != 0;
     }
 
     bool HdTexturePack::has(const HdTextureName &name) const

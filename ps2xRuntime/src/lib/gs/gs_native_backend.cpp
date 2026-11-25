@@ -2504,6 +2504,8 @@ bool GSNativeBackend::bindHdTexture(const GSDrawState &state, float &width, floa
     if (psm != 0x00u && psm != 0x13u && psm != 0x14u)
         return false;
     const uint64_t tex0 = rawTex0(context.tex0);
+    if (!pack.hasBits(psm | static_cast<uint32_t>(context.tex0.tw) << 6 | static_cast<uint32_t>(context.tex0.th) << 10))
+        return false; // no file in the pack has this format and size
     // The texture's own hash only changes with its pages: kept per TBP/TBW/PSM/TW/TH and their page versions.
     const auto [firstPage, endPage] = texturePages(context.tex0, context.clamp);
     uint64_t pages = 0xcbf29ce484222325ull;
