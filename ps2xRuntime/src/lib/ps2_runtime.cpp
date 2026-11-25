@@ -92,7 +92,7 @@ struct ProgramHeader
 // Host audio mixed into the SPU2 output (native movie soundtracks).
 void (*g_ps2xHostAudioMix)(int16_t *frames, size_t count) = nullptr;
 // Graphics counters for PS2X_GFX_STATS: 0 MSCAL/MSCNT, 1 XGKICK, 2 GIF packets.
-std::atomic<uint64_t> g_ps2xGfxCounters[4];
+std::atomic<uint64_t> g_ps2xGfxCounters[8];
 // A VU1 program runs to its end (E bit) like on hardware; the cap only stops a runaway program.
 static constexpr uint32_t kVu1ProgramCycleCap = 1u << 24;
 
@@ -1567,7 +1567,8 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
             {
                 extern void ps2xPrintGsDrawStats(uint64_t tick);
                 std::cerr << "[gfx] tick=" << now << " vu1calls=" << g_ps2xGfxCounters[0].exchange(0)
-                          << " xgkick=" << g_ps2xGfxCounters[1].exchange(0) << " gifpackets=" << g_ps2xGfxCounters[2].exchange(0) << std::endl;
+                          << " xgkick=" << g_ps2xGfxCounters[1].exchange(0) << " gifpackets=" << g_ps2xGfxCounters[2].exchange(0) << " xgkickdone=" << g_ps2xGfxCounters[3].exchange(0)
+                          << " xyzf2_packed_adc=" << g_ps2xGfxCounters[4].exchange(0) << " xyzf2_packed_kick=" << g_ps2xGfxCounters[5].exchange(0) << std::endl;
                 ps2xPrintGsDrawStats(now);
                 gfxStart = now;
             }
@@ -2599,7 +2600,11 @@ void PS2Runtime::run()
     Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
     Texture2D frameTex = LoadTextureFromImage(blank);
     UnloadImage(blank);
-    SetTextureFilter(frameTex, ps2xHostSettings().textureFilter == "nearest" ? TEXTURE_FILTER_POINT : TEXTURE_FILTER_BILINEAR);
+    // "bilinear" is drawn as sharp bilinear: the picture is first enlarged by whole pixels (point filter),
+    // then only the remaining fraction is filtered. "nearest" keeps plain pixels.
+    const bool sharpBilinear = ps2xHostSettings().textureFilter != "nearest";
+    SetTextureFilter(frameTex, TEXTURE_FILTER_POINT);
+    RenderTexture2D prescaled{};
 
     std::atomic<bool> gameThreadFinished{false};
 
@@ -2753,7 +2758,29 @@ void PS2Runtime::run()
             (screenHeight - dstHeight) * 0.5f,
             dstWidth,
             dstHeight};
-        DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+        const int kx = std::max(1, static_cast<int>(dstWidth / srcWidth));
+        const int ky = std::max(1, static_cast<int>(dstHeight / srcHeight));
+        if (sharpBilinear && (kx > 1 || ky > 1 || dstWidth != srcWidth || dstHeight != srcHeight))
+        {
+            const int pw = static_cast<int>(srcWidth) * kx;
+            const int ph = static_cast<int>(srcHeight) * ky;
+            if (prescaled.id == 0 || prescaled.texture.width != pw || prescaled.texture.height != ph)
+            {
+                if (prescaled.id != 0)
+                    UnloadRenderTexture(prescaled);
+                prescaled = LoadRenderTexture(pw, ph);
+                SetTextureFilter(prescaled.texture, TEXTURE_FILTER_BILINEAR);
+            }
+            BeginTextureMode(prescaled);
+            ClearBackground(BLACK);
+            DrawTexturePro(frameTex, srcRect, Rectangle{0.0f, 0.0f, static_cast<float>(pw), static_cast<float>(ph)}, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+            EndTextureMode();
+            // Render textures are stored upside down.
+            DrawTexturePro(prescaled.texture, Rectangle{0.0f, 0.0f, static_cast<float>(pw), -static_cast<float>(ph)}, dstRect,
+                           Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+        }
+        else
+            DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {
             m_debugUiDrawCallback(*this, m_debugUiUserData);
@@ -2780,6 +2807,8 @@ void PS2Runtime::run()
         m_debugUiShutdownCallback(*this, m_debugUiUserData);
         m_debugUiInitialized = false;
     }
+    if (prescaled.id != 0)
+        UnloadRenderTexture(prescaled);
     UnloadTexture(frameTex);
     CloseWindow();
 

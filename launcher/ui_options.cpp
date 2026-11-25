@@ -40,11 +40,9 @@ void displayTab(UI& ui) {
         }
         ImGui::EndCombo();
     }
-    std::string fps = d.fps_limit ? std::to_string(d.fps_limit) : "Unlimited";
-    if (ImGui::BeginCombo("Frame limit",fps.c_str())) {
-        for (int cap : {30,60,120,144,0}) if (ImGui::Selectable(cap ? std::to_string(cap).c_str() : "Unlimited",d.fps_limit==cap)) d.fps_limit=cap;
-        ImGui::EndCombo();
-    }
+    // The game runs on the PS2's 60 Hz clock: more frames would only speed the game up.
+    d.fps_limit = 60;
+    ImGui::TextColored(muted(),"Frame rate: 60 (the game's own speed)");
     ImGui::Checkbox("VSync",&d.vsync);
 }
 void graphicsTab(UI& ui) {

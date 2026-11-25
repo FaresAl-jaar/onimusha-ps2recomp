@@ -920,6 +920,25 @@ void VU1Interpreter::finishXgkick()
     if (!m_xgkick.active)
         return;
 
+    {
+        extern std::atomic<uint64_t> g_ps2xGfxCounters[8];
+        g_ps2xGfxCounters[3].fetch_add(1, std::memory_order_relaxed);
+        // PS2X_TRACE_PATH1=<skip>: the first GIF tags of 40 PATH1 packets after <skip> packets.
+        static const char *trace = std::getenv("PS2X_TRACE_PATH1");
+        static uint64_t seen = 0;
+        if (trace && seen++ >= std::strtoull(trace, nullptr, 10) && seen < std::strtoull(trace, nullptr, 10) + 40u)
+        {
+            std::fprintf(stderr, "[path1] bytes=%u clip=%06x vi1=%d", m_xgkick.totalBytes, m_state.clip & 0xFFFFFFu, m_state.vi[1]);
+            for (uint32_t q = 0; q < 10u && q * 16u < m_xgkick.totalBytes; ++q)
+            {
+                uint64_t lo = 0, hi = 0;
+                std::memcpy(&lo, m_xgkick.packet.data() + q * 16u, 8);
+                std::memcpy(&hi, m_xgkick.packet.data() + q * 16u + 8u, 8);
+                std::fprintf(stderr, " q%u=%016llx:%016llx", q, static_cast<unsigned long long>(hi), static_cast<unsigned long long>(lo));
+            }
+            std::fprintf(stderr, "\n");
+        }
+    }
     if (m_activeMemory)
         m_activeMemory->submitGifPacket(GifPathId::Path1, m_xgkick.packet.data(), m_xgkick.totalBytes);
     else if (m_activeGs)
@@ -927,7 +946,7 @@ void VU1Interpreter::finishXgkick()
     m_xgkick.active = false;
 }
 
-extern std::atomic<uint64_t> g_ps2xGfxCounters[4];
+extern std::atomic<uint64_t> g_ps2xGfxCounters[8];
 void VU1Interpreter::startXgkick(uint32_t qwordAddress)
 {
     g_ps2xGfxCounters[1].fetch_add(1, std::memory_order_relaxed);

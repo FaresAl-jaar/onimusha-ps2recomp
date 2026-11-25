@@ -721,15 +721,12 @@ namespace ps2x::iop::detail
 
     IopThread *IopKernel::beginNextReady(uint64_t currentCycle)
     {
+        // One pass: wake due delays and pick the best ready thread.
+        IopThread *next = nullptr;
         for (auto &[id, thread] : m_threads)
         {
             if (thread.state == IopThreadState::Delay && thread.wakeCycle <= currentCycle)
                 thread.state = IopThreadState::Ready;
-        }
-
-        IopThread *next = nullptr;
-        for (auto &[id, thread] : m_threads)
-        {
             if (thread.state != IopThreadState::Ready)
                 continue;
             if (next == nullptr || thread.priority < next->priority ||

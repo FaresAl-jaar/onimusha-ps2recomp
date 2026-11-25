@@ -893,11 +893,18 @@ namespace ps2x::iop::detail
 
     void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
     {
+        // The EE accounts cycles in small steps; running the IOP scheduler for each of them cost a quarter
+        // of the EE thread. Batch at least kIopBatchCycles IOP cycles (about 7 microseconds of IOP time).
+        constexpr uint64_t kIopBatchCycles = 256u;
         const uint64_t total = m_impl->eeCycleCarry + eeCycles;
+        if (total < kIopBatchCycles * 8u)
+        {
+            m_impl->eeCycleCarry = total;
+            return;
+        }
         const uint64_t iopCycles = total / 8u;
         m_impl->eeCycleCarry = total % 8u;
-        if (iopCycles)
-            m_impl->runCycles(iopCycles);
+        m_impl->runCycles(iopCycles);
     }
 
     RpcResult IopEmulator::handleRpc(const RpcRequest &request)

@@ -4,6 +4,7 @@
 #include <mutex>
 #include <map>
 #include "runtime/gs/gs_frontend.h"
+extern std::atomic<uint64_t> g_ps2xGfxCounters[8];
 #include "runtime/gs/gs_cpu_backend.h"
 #include "ps2_log.h"
 #include "runtime/ps2_memory.h"
@@ -676,7 +677,7 @@ void ps2xPrintGsDrawStats(uint64_t tick)
         std::fprintf(stderr, "[gfx] tick=%llu draws=%llu %s\n", static_cast<unsigned long long>(tick), static_cast<unsigned long long>(v[i].second), v[i].first.c_str());
     g_drawStats.clear();
 }
-extern std::atomic<uint64_t> g_ps2xGfxCounters[4];
+extern std::atomic<uint64_t> g_ps2xGfxCounters[8];
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
     g_ps2xGfxCounters[2].fetch_add(1, std::memory_order_relaxed);
@@ -981,6 +982,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
         vtx.u = m_curU;
         vtx.v = m_curV;
         vtx.fog = f;
+        g_ps2xGfxCounters[adk ? 4 : 5].fetch_add(1, std::memory_order_relaxed);
         vertexKick(!adk);
         break;
     }
