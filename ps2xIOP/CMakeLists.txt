@@ -82,3 +82,7 @@ if(PS2X_LIB_OPT_FLAGS)
     separate_arguments(_ps2x_lib_opt UNIX_COMMAND "${PS2X_LIB_OPT_FLAGS}")
     target_compile_options(ps2_iop PRIVATE ${_ps2x_lib_opt})
 endif()
+
+if(MSVC)
+    target_compile_options(ps2_iop PRIVATE /Ob2) # full inlining, see ps2xRuntime/CMakeLists.txt
+endif()

@@ -646,3 +646,9 @@ if(PS2X_LIB_OPT_FLAGS)
     separate_arguments(_ps2x_lib_opt UNIX_COMMAND "${PS2X_LIB_OPT_FLAGS}")
     target_compile_options(ps2_runtime PRIVATE ${_ps2x_lib_opt})
 endif()
+
+# MSVC: the runtime and the IOP get full inlining (/Ob2); only the huge recompiled runner keeps the faster to
+# compile /Ob1 from the release flags.
+if(MSVC)
+    target_compile_options(ps2_runtime PRIVATE /Ob2)
+endif()

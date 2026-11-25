@@ -301,6 +301,32 @@ namespace ps2x::native
                     m_impl->entries[key].path = utf8(it->path());
             }
         }
+        if (m_impl->entries.empty() && fs::is_directory(path, ec))
+        {
+            // A folder holding the pack's zip (as downloaded): open the zip.
+            for (const auto &entry : fs::directory_iterator(path, fs::directory_options::skip_permission_denied, ec))
+            {
+                std::string ext = utf8(entry.path().extension());
+                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+                if (ext == ".zip" && entry.is_regular_file(ec))
+                {
+                    std::fprintf(stderr, "[hd] %s has no loose textures, trying %s\n", pathText.c_str(), utf8(entry.path()).c_str());
+                    m_impl.reset();
+                    return open(utf8(entry.path()), serial);
+                }
+            }
+        }
+        if (m_impl->entries.empty() && fs::is_directory(path, ec))
+        {
+            // A folder that holds the pack as a zip (as downloaded): open the zip.
+            for (const auto &entry : fs::directory_iterator(path, ec))
+            {
+                std::string ext = utf8(entry.path().extension());
+                std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+                if (entry.is_regular_file(ec) && ext == ".zip")
+                    return open(utf8(entry.path()), serial);
+            }
+        }
         if (m_impl->entries.empty())
         {
             std::fprintf(stderr, "[hd] no %s textures in %s\n", serial.c_str(), pathText.c_str());

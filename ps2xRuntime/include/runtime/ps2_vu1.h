@@ -210,6 +210,7 @@ private:
     bool m_decodedCodeCacheValid = false;
 
     std::array<FlagPipelineEntry, kMaxFlagEntries> m_flagPipeline{};
+    uint64_t m_nextCommit = 0; // earliest readyCycle in the pipelines below (commitReadyPipelines)
     ScalarPipelineEntry m_fdiv{};
     std::array<ScalarPipelineEntry, 2> m_efu{};
     std::array<PendingStore, kMaxPendingStores> m_storePipeline{};
