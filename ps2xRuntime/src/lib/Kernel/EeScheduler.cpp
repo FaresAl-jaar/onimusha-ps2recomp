@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cstdio>
 #include <iostream>
 #include "runtime/ee_scheduler.h"
 
@@ -1969,7 +1971,24 @@ void EeScheduler::processEvent(const EeEvent &event)
         m_vsyncFlagAddress = 0u;
         m_vsyncTickAddress = 0u;
         m_runtime.gs().presentOnDrawThread();
-        g_ps2xVblankCount.fetch_add(1, std::memory_order_relaxed);
+        {
+            const uint64_t vb = g_ps2xVblankCount.fetch_add(1, std::memory_order_relaxed) + 1u;
+            // PS2X_RAM_DUMP=<n>: write EE RAM to /tmp/eeram_<vblank>.bin every n VBlanks.
+            static const uint64_t s_ramDump = []() -> uint64_t {
+                const char *e = std::getenv("PS2X_RAM_DUMP");
+                return e ? std::strtoull(e, nullptr, 10) : 0ull;
+            }();
+            if (s_ramDump != 0u && m_rdram && vb % s_ramDump == 0u)
+            {
+                char name[64];
+                std::snprintf(name, sizeof(name), "/tmp/eeram_%llu.bin", static_cast<unsigned long long>(vb));
+                if (FILE *f = std::fopen(name, "wb"))
+                {
+                    std::fwrite(m_rdram, 1, PS2_RAM_SIZE, f);
+                    std::fclose(f);
+                }
+            }
+        }
         completeVSync(m_vsyncTick);
         if (m_gsVSyncCallback != 0u && m_runtime.hasFunction(m_gsVSyncCallback))
         {

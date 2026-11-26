@@ -1569,7 +1569,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                     uint32_t asr1 = m_ioRegisters[channelBase + 0x50];
                     uint32_t asp = (chcr >> 4) & 0x3u;
                     const bool tieEnabled = (chcr & (1u << 7)) != 0u;
-                    const int kMaxChainTags = 4096;
+                    const int kMaxChainTags = 1 << 20; // Onimusha builds one chain of about 15000 tags per frame
                     std::vector<uint8_t> chainBuf;
                     std::vector<ChainSegment> chainSegments;
 
@@ -1629,6 +1629,14 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                         channelBase == 0x10009000u || channelBase == 0x10008000u;
                     const bool transferTagData = isVifChannel && (chcr & 0x40u) != 0u;
 
+                    if (static const bool s_tadrLog = std::getenv("PS2X_VIF1_TADR_LOG") != nullptr; s_tadrLog && channelBase == 0x10009000u)
+                    {
+                        extern std::atomic<uint64_t> g_ps2xVblankCount;
+                        static uint64_t s_logged = 0;
+                        const uint64_t vb = g_ps2xVblankCount.load(std::memory_order_relaxed);
+                        if (vb >= 9000u && s_logged++ < 20000u)
+                            std::fprintf(stderr, "[vif1 tadr] vb=%llu tadr=%08x chcr=%08x\n", (unsigned long long)vb, tagAddr, chcr);
+                    }
                     int tagsProcessed = 0;
                     uint32_t lastTagUpper = (chcr >> 16) & 0xFFFFu;
 
