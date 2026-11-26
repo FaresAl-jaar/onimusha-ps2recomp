@@ -1,4 +1,5 @@
 #include <cstdio>
+#include "ps2x_prof.h"
 #include <vector>
 #include <cstdlib>
 #include "ps2_runtime.h"
@@ -21,6 +22,7 @@
 // GLFW is inside raylib: only these two calls are needed here.
 extern "C" void *glfwGetCurrentContext(void);
 extern std::atomic<uint64_t> g_ps2xVblankCount; // EeScheduler.cpp
+std::atomic<uint64_t> ps2x::prof::g_ns[ps2x::prof::Count] = {};
 extern "C" void glfwGetFramebufferSize(void *window, int *width, int *height);
 #if defined(PS2X_HAVE_NATIVE_GS)
 #include "runtime/gs/gs_native_backend.h"
@@ -548,6 +550,18 @@ namespace
                              static_cast<double>(vblanks - s_lastVblanks) / seconds,
                              static_cast<unsigned long long>(s_audioDrops.exchange(0)), static_cast<unsigned long long>(s_audioStretches.exchange(0)),
                              static_cast<unsigned long long>(s_audioDry.exchange(0)), ps2x::iop::spu2BufferedFrames());
+                {
+                    static uint64_t s_lastNs[ps2x::prof::Count] = {};
+                    static const char *const kNames[ps2x::prof::Count] = {"game code", "VU1", "GS", "IOP", "present", "VIF"};
+                    std::fprintf(stderr, "[speed] game thread ms per second:");
+                    for (int i = 0; i < ps2x::prof::Count; ++i)
+                    {
+                        const uint64_t ns = ps2x::prof::g_ns[i].load(std::memory_order_relaxed);
+                        std::fprintf(stderr, " %s %.0f", kNames[i], static_cast<double>(ns - s_lastNs[i]) / 1e6 / seconds);
+                        s_lastNs[i] = ns;
+                    }
+                    std::fprintf(stderr, "\n");
+                }
                 s_last = now;
                 s_lastVblanks = vblanks;
             }
@@ -785,6 +799,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
 
 void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
 {
+    ps2x::prof::Scope profScope(ps2x::prof::Iop);
     m_iopSubsystem->runEeCycles(eeCycles);
 }
 

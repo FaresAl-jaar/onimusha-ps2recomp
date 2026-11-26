@@ -1,4 +1,5 @@
 #include "runtime/ps2_vu1.h"
+#include "../ps2x_prof.h"
 #include "runtime/gs/ps2_gif_arbiter.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ps2_memory.h"
@@ -1829,6 +1830,7 @@ void VU1Interpreter::execute(uint8_t *vuCode, uint32_t codeSize,
                              uint32_t startPC, uint32_t top, uint32_t itop,
                              uint32_t maxCycles)
 {
+    ps2x::prof::Scope profScope(m_unit == Unit::VU1 ? ps2x::prof::Vu1 : ps2x::prof::Ee);
     // A previous run cut short by its cycle budget may still have queued stores or an XGKICK in
     // flight; complete them instead of discarding them when the new program starts.
     if (m_activeVuData != nullptr && pipelinesPending())
@@ -1861,6 +1863,7 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
                             GS &gs, PS2Memory *memory,
                             uint32_t top, uint32_t itop, uint32_t maxCycles)
 {
+    ps2x::prof::Scope profScope(m_unit == Unit::VU1 ? ps2x::prof::Vu1 : ps2x::prof::Ee);
     m_state.top = top;
     m_state.itop = itop;
     m_state.stoppedByD = false;

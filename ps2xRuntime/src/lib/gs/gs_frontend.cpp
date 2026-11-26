@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include "../ps2x_prof.h"
 #include <vector>
 #include <string>
 #include <mutex>
@@ -547,6 +548,7 @@ void GS::latchHostPresentationFrame()
 
 void GS::presentOnDrawThread()
 {
+    ps2x::prof::Scope profScope(ps2x::prof::Present);
     {
         std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
         if (!m_backend || !m_backend->PresentsOnDrawThread())
@@ -753,6 +755,7 @@ static void ps2xGifDump(const uint8_t *data, uint32_t sizeBytes)
 
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
+    ps2x::prof::Scope profScope(ps2x::prof::Gs);
     g_ps2xGfxCounters[2].fetch_add(1, std::memory_order_relaxed);
     if (data && sizeBytes >= 16u)
         ps2xGifDump(data, sizeBytes);
@@ -857,6 +860,7 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 
 bool GS::processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
+    ps2x::prof::Scope profScope(ps2x::prof::Gs);
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (!data || sizeBytes < 16u || !m_backend)
         return false;

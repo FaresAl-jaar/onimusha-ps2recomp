@@ -1,5 +1,6 @@
 // Based on Blackline Interactive implementation
 #include "runtime/ps2_memory.h"
+#include "ps2x_prof.h"
 #include <cstring>
 #include <unordered_map>
 
@@ -298,6 +299,7 @@ void PS2Memory::processVIF1Data(uint32_t srcPhys, uint32_t sizeBytes)
 
 void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 {
+    ps2x::prof::Scope profScope(ps2x::prof::Vif);
     if (sizeBytes == 0u)
         return;
 

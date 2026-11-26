@@ -146,10 +146,15 @@ inline void VU1Lifted::fmacStore(VU1Interpreter &vu, uint32_t word, float *resul
 {
     if constexpr (!Flags)
     {
+        // A lane is plain when its exponent is in 2..253, or when it is exactly +-0 (zero
+        // results are frequent and need no rounding; the VU keeps the sign as IEEE does).
         bool plain = true;
         for (uint32_t c = 0; c < 4u; ++c)
             if (Dest & (8u >> c))
-                plain &= ((lowBits(result[c]) >> 23) & 0xFFu) - 2u <= 251u;
+            {
+                const uint32_t bits = lowBits(result[c]);
+                plain &= ((bits >> 23) & 0xFFu) - 2u <= 251u || (bits & 0x7FFFFFFFu) == 0u;
+            }
         if (plain)
         {
             for (uint32_t c = 0; c < 4u; ++c)
