@@ -716,6 +716,7 @@ void ps2xPrintGsDrawStats(uint64_t tick)
 }
 extern std::atomic<uint64_t> g_ps2xGfxCounters[8];
 extern std::atomic<uint64_t> g_ps2xVblankCount;
+static bool s_logNextImage = false;
 
 // PS2X_GIF_DUMP=<n>: every n VBlanks, write all GIF packets of the next frame to
 // /tmp/gifdump_<vblank>.bin as [u32 size][bytes] records (for comparing with a PCSX2 GS dump).
@@ -1529,6 +1530,21 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
     case GS_REG_TRXDIR:
     {
         m_trxdir = static_cast<uint32_t>(value & 0x3);
+        if (static const bool s_trxLog = std::getenv("PS2X_GS_TRX_LOG") != nullptr; s_trxLog)
+        {
+            // Transfers that touch the character CLUT area (blocks 0x1c00..0x1f00) or copy inside GS memory.
+            static uint32_t s_logged = 0;
+            const bool clutArea = m_bitbltbuf.dbp >= 0x1c00u && m_bitbltbuf.dbp < 0x1f00u;
+            if ((clutArea || m_trxdir == 2u) && s_logged++ < 400u)
+            {
+                extern std::atomic<uint64_t> g_ps2xVblankCount;
+                std::fprintf(stderr, "[gs trx] vb=%llu dir=%u sbp=%#x sbw=%u spsm=%#x dbp=%#x dbw=%u dpsm=%#x pos=%u,%u->%u,%u size=%ux%u\n",
+                             (unsigned long long)g_ps2xVblankCount.load(), m_trxdir, m_bitbltbuf.sbp, m_bitbltbuf.sbw, m_bitbltbuf.spsm,
+                             m_bitbltbuf.dbp, m_bitbltbuf.dbw, m_bitbltbuf.dpsm, m_trxpos.ssax, m_trxpos.ssay, m_trxpos.dsax, m_trxpos.dsay,
+                             m_trxreg.rrw, m_trxreg.rrh);
+                s_logNextImage = clutArea && m_trxdir == 0u;
+            }
+        }
 
         if (m_backend)
         {
@@ -1759,6 +1775,14 @@ void GS::vertexKick(bool drawing)
 
 void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
 {
+    if (s_logNextImage && sizeBytes >= 32u)
+    {
+        s_logNextImage = false;
+        std::fprintf(stderr, "[gs trx] image data %u bytes, first 32:", sizeBytes);
+        for (uint32_t i = 0; i < 32u; ++i)
+            std::fprintf(stderr, "%02x", data[i]);
+        std::fprintf(stderr, "\n");
+    }
     if (m_backend)
         m_backend->UploadImage(data, sizeBytes);
 }
