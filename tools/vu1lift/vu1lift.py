@@ -329,7 +329,8 @@ class Lifter:
         for i in range(0, len(words), 8):
             w("    " + " ".join("0x%08Xu," % x for x in words[i:i + 8]))
         w("};")
-        w("static const uint16_t kDynamicPairs[] = {%s};" % ", ".join("0x%04X" % pc for pc in sorted(self.dynamic)))
+        if self.dynamic:  # MSVC rejects an empty array
+            w("static const uint16_t kDynamicPairs[] = {%s};" % ", ".join("0x%04X" % pc for pc in sorted(self.dynamic)))
         w("// MAC/status are computed for %d of %d FMAC ops (the rest cannot be observed by FMAND & co.)."
           % (len(self.mac_live), sum(1 for p in self.code.values() if p.writes_mac())))
         w("constexpr bool kLiftedFlagsExact = %s;" % ("true" if self.flags_exact else "false"))

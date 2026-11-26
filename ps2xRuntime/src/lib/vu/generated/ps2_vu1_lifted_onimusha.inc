@@ -160,7 +160,6 @@ alignas(16) static const uint32_t kImage[] = {
     0x81F0737Cu, 0x000002FFu, 0x81EF737Cu, 0x000002FFu, 0x81EE737Cu, 0x000002FFu, 0x81ED737Cu, 0x000002FFu,
     0x8000033Cu, 0x000002FFu, 0x48000800u, 0x000002FFu, 0x8000033Cu, 0x000002FFu,
 };
-static const uint16_t kDynamicPairs[] = {};
 // MAC/status are computed for 2 of 59 FMAC ops (the rest cannot be observed by FMAND & co.).
 constexpr bool kLiftedFlagsExact = false;
 
@@ -1036,7 +1035,6 @@ alignas(16) static const uint32_t kImage[] = {
     0x81F0737Cu, 0x000002FFu, 0x81EF737Cu, 0x000002FFu, 0x81EE737Cu, 0x000002FFu, 0x81ED737Cu, 0x000002FFu,
     0x8000033Cu, 0x000002FFu, 0x48000800u, 0x000002FFu, 0x8000033Cu, 0x000002FFu,
 };
-static const uint16_t kDynamicPairs[] = {};
 // MAC/status are computed for 1 of 101 FMAC ops (the rest cannot be observed by FMAND & co.).
 constexpr bool kLiftedFlagsExact = false;
 
