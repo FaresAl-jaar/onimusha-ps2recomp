@@ -630,12 +630,11 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 cl = 1u;
             if (wl == 0u)
                 wl = 1u;
-            // Onimusha DoD: the camera matrices (clip and screen, UNPACK V4-32 of 16 qwords to 0x3f0) follow the last
-            // object's STCYCL 4,1 in our VIF stream, which would spread them over every fourth qword and leave the
-            // screen matrix's first row as the clip matrix's second (every vertex off screen, every one ADC). They
-            // are written linearly. PS2X_VIF_MATRIX_SKIP=1 keeps the write cycle (to find the real cause).
-            if (static const bool s_keepCycle = std::getenv("PS2X_VIF_MATRIX_SKIP") != nullptr;
-                !s_keepCycle && (imm & 0x3FFu) == 0x3f0u && num == 16u && vn == 3u && vl == 0u && !maskEnable)
+            // The old camera matrix workaround (linear write of the V4-32 UNPACK of 16 qwords to 0x3f0) is
+            // no longer needed: the wrong STCYCL came from DMA chains cut off after 4096 tags. It stays
+            // available as PS2X_VIF_MATRIX_FIX=1 for comparison.
+            if (static const bool s_matrixFix = std::getenv("PS2X_VIF_MATRIX_FIX") != nullptr;
+                s_matrixFix && (imm & 0x3FFu) == 0x3f0u && num == 16u && vn == 3u && vl == 0u && !maskEnable)
                 cl = wl = 1u;
 
             if (static const bool s_unpackStats = std::getenv("PS2X_VIF_UNPACK_STATS") != nullptr; s_unpackStats)
