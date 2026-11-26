@@ -40,7 +40,7 @@ def lift_image(index, image_bytes, entries, jr_targets, executed, exact_flags):
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--census", required=True)
+    ap.add_argument("--census", required=True, action="append", help="census directory (repeatable)")
     ap.add_argument("--min-share", type=float, default=0.01,
                     help="lift images with at least this share of all VU1 cycles")
     ap.add_argument("--exact-flags", action="store_true")
@@ -48,22 +48,29 @@ def main(argv=None):
         REPO, "ps2xRuntime/src/lib/vu/generated/ps2_vu1_lifted_onimusha.inc"))
     args = ap.parse_args(argv)
 
-    manifest = json.load(open(os.path.join(args.census, "manifest.json")))
-    census = json.load(open(os.path.join(args.census, "gitaroo_census.json")))
-    by_hash = {im["crc"]: im for im in census["images"]}
-    jumps = {}
-    for h, pc, target, _ in census.get("image_jumps", []):
-        jumps.setdefault(h, set()).add(target)
-    total = sum(im["cycles"] for im in census["images"]) or 1
+    programs, by_hash, jumps, dirs = [], {}, {}, {}
+    for cdir in args.census:
+        manifest = json.load(open(os.path.join(cdir, "manifest.json")))
+        census = json.load(open(os.path.join(cdir, "gitaroo_census.json")))
+        for im in census["images"]:
+            if im["crc"] not in by_hash:
+                by_hash[im["crc"]] = im
+        for prog in manifest["programs"]:
+            if prog["crc"] not in dirs:
+                dirs[prog["crc"]] = cdir
+                programs.append(prog)
+        for h, pc, target, _ in census.get("image_jumps", []):
+            jumps.setdefault(h, set()).add(target)
+    total = sum(im["cycles"] for im in by_hash.values()) or 1
 
     parts, table = [], []
-    for prog in sorted(manifest["programs"], key=lambda p: -by_hash[p["crc"]]["cycles"]):
+    for prog in sorted(programs, key=lambda p: -by_hash[p["crc"]]["cycles"]):
         h = prog["crc"]
         im = by_hash[h]
         share = im["cycles"] / total
         if share < args.min_share:
             continue
-        data = open(os.path.join(args.census, prog["image"]), "rb").read()
+        data = open(os.path.join(dirs[h], prog["image"]), "rb").read()
         code_hi = (prog["code_hi"] + 7) & ~7
         image = data[:code_hi]
         executed = {int(k) for k in im["pc_count"]}

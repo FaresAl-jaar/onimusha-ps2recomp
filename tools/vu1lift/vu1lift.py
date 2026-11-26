@@ -200,8 +200,8 @@ class Lifter:
                 raise SystemExit("E bit on/after a branch at %04X" % pc)
             if p.ebit and nxt and (nxt.is_branch or nxt.is_jump):
                 raise SystemExit("branch in an E-bit delay slot at %04X" % (pc + 8))
-            if (p.uw >> 21) & 0xF and not p.upper_nop() and p.upper_vf_write() == 0 and self.writes_vf0(p):
-                raise SystemExit("upper op at %04X writes VF0: not supported by the lifter" % pc)
+            # An FMAC op into VF0 only sets MAC/status (e.g. OPMSUB for backface culling): lifted into a
+            # scratch register below.
         for pc in self.dynamic:
             if not self.code[pc].op == 0x20:
                 raise SystemExit("dynamic branch %04X is not a B" % pc)
@@ -495,7 +495,8 @@ class Lifter:
         else:
             dst = "lacc" if to_acc else "VF(%d)" % fd
             if not to_acc and fd == 0:
-                raise SystemExit("FMAC op writes VF0 at %04X" % p.pc)
+                out.append("  float vf0Scratch[4] = {0.0f, 0.0f, 0.0f, 1.0f};")
+                dst = "vf0Scratch"
             out.append("  fmacStore<0x%X, %s>(vu, 0x%08Xu, r, %s, lvf, lacc);"
                        % (dest, "true" if p.pc in self.mac_live else "false", uw, dst))
         out.append("}")

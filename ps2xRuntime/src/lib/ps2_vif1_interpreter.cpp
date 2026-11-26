@@ -636,6 +636,23 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 !s_keepCycle && (imm & 0x3FFu) == 0x3f0u && num == 16u && vn == 3u && vl == 0u && !maskEnable)
                 cl = wl = 1u;
 
+            if (static const bool s_unpackStats = std::getenv("PS2X_VIF_UNPACK_STATS") != nullptr; s_unpackStats)
+            {
+                static std::unordered_map<uint64_t, uint64_t> s_kinds;
+                static uint64_t s_total = 0;
+                const uint64_t kind = (uint64_t)cl << 40 | (uint64_t)wl << 32 | (uint64_t)vn << 24 | (uint64_t)vl << 16 |
+                                      (uint64_t)(maskEnable ? 1u : 0u) << 8 | (uint64_t)(vif1_regs.mode & 3u) << 4 | ((imm & 0x4000u) ? 1u : 0u);
+                ++s_kinds[kind];
+                if ((++s_total % 500000u) == 0u)
+                {
+                    std::fprintf(stderr, "[unpack stats] %llu unpacks:", (unsigned long long)s_total);
+                    for (const auto &[k, c] : s_kinds)
+                        std::fprintf(stderr, " cl%u wl%u V%u-%u mask%u mode%u usn%u=%llu", (unsigned)(k >> 40), (unsigned)((k >> 32) & 0xFF),
+                                     (unsigned)((k >> 24) & 0xFF) + 1u, 32u >> ((k >> 16) & 0xFF), (unsigned)((k >> 8) & 1), (unsigned)((k >> 4) & 3),
+                                     (unsigned)(k & 1), (unsigned long long)c);
+                    std::fprintf(stderr, "\n");
+                }
+            }
             uint32_t sourceVectorCount = writeVectorCount;
             if (cl < wl)
             {
