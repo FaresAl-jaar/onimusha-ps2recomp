@@ -1410,6 +1410,14 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
     case GS_REG_TEST_2:
     {
         int ci = (regAddr == GS_REG_TEST_2) ? 1 : 0;
+        // PS2X_GS_ZALWAYS=1: every depth test passes (to see whether missing geometry is Z rejected).
+        // PS2X_GS_NOATEST=1: the alpha test is off.
+        static const bool s_zAlways = std::getenv("PS2X_GS_ZALWAYS") != nullptr;
+        static const bool s_noAtest = std::getenv("PS2X_GS_NOATEST") != nullptr;
+        if (s_zAlways && (value & (1ull << 16)) != 0ull)
+            value = (value & ~(3ull << 17)) | (1ull << 17);
+        if (s_noAtest)
+            value &= ~1ull;
         m_ctx[ci].test = value;
         break;
     }

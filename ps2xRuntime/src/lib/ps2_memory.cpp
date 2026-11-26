@@ -1666,6 +1666,16 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                         uint32_t id = static_cast<uint32_t>((tag >> 28) & 0x7);
                         const bool irq = ((tag >> 31) & 0x1ull) != 0ull;
                         uint32_t addr = static_cast<uint32_t>((tag >> 32) & 0x7FFFFFFF);
+                        // Bit 63 (SPR) puts ADDR in scratchpad.
+                        if ((tag >> 63) != 0ull)
+                        {
+                            static const bool s_logSpr = std::getenv("PS2X_DMA_SPR_LOG") != nullptr;
+                            static uint32_t s_sprLogged = 0;
+                            if (s_logSpr && s_sprLogged++ < 50u)
+                                std::fprintf(stderr, "[dma] chain tag %08x id=%u qwc=%u addr=%08x has SPR set (channel %08x)\n",
+                                             currentTagAddr, id, tagQwc, addr, channelBase);
+                            addr = 0x70000000u | (addr & 0x3FFFu);
+                        }
                         lastTagUpper = static_cast<uint32_t>((tag >> 16) & 0xFFFFu);
                         ++tagsProcessed;
 

@@ -353,8 +353,26 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             }
 
             // Legacy layout: raw image qwords right after the DIRECT that carried the IMAGE tag.
-            pos += continuePendingImage(data + pos, availableQw) * 16u;
-            continue;
+            // On hardware IMAGE data only reaches the GIF through DIRECT, so words outside a DIRECT
+            // are VIFcodes. Never seen in Stage 1; PS2X_VIF_STRICT_IMAGE=1 decodes them as VIFcodes.
+            static const bool s_legacyImage = std::getenv("PS2X_VIF_STRICT_IMAGE") == nullptr;
+            static const bool s_logImage = std::getenv("PS2X_VIF_IMAGE_LOG") != nullptr;
+            if (s_logImage)
+            {
+                static uint32_t s_logged = 0;
+                uint32_t w[4] = {};
+                std::memcpy(w, data + pos, std::min<uint32_t>(16u, sizeBytes - pos));
+                if (s_logged++ < 200u)
+                    std::fprintf(stderr, "[vif1 image] open IMAGE qwc=%u at pos %u of %u, next words %08x %08x %08x %08x%s\n",
+                                 m_vif1PendingPath2ImageQwc, pos, sizeBytes, w[0], w[1], w[2], w[3],
+                                 s_legacyImage ? " (swallowed)" : " (decoded as VIFcodes)");
+            }
+            if (s_legacyImage)
+            {
+                pos += continuePendingImage(data + pos, availableQw) * 16u;
+                continue;
+            }
+            // Otherwise the GIF keeps waiting for the rest of the IMAGE; decode this word as a VIFcode.
         }
 
         uint32_t cmd;
