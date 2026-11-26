@@ -405,7 +405,15 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             }
         }
         if (irq)
+        {
             vif1_regs.stat |= (1u << 11); // INT
+            if (static const bool s_irqLog = std::getenv("PS2X_VIF_IRQ_LOG") != nullptr; s_irqLog)
+            {
+                static uint64_t s_irqs = 0;
+                if ((++s_irqs % 2000u) == 1u || s_irqs < 20u)
+                    std::fprintf(stderr, "[vif1 irq] #%llu cmd %08x at %u of %u\n", (unsigned long long)s_irqs, cmd, pos - 4u, sizeBytes);
+            }
+        }
 
         if (opcode == VIF_NOP)
         {

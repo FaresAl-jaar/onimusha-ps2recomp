@@ -713,9 +713,49 @@ void ps2xPrintGsDrawStats(uint64_t tick)
     g_drawStats.clear();
 }
 extern std::atomic<uint64_t> g_ps2xGfxCounters[8];
+extern std::atomic<uint64_t> g_ps2xVblankCount;
+
+// PS2X_GIF_DUMP=<n>: every n VBlanks, write all GIF packets of the next frame to
+// /tmp/gifdump_<vblank>.bin as [u32 size][bytes] records (for comparing with a PCSX2 GS dump).
+static void ps2xGifDump(const uint8_t *data, uint32_t sizeBytes)
+{
+    static const uint64_t s_every = []() -> uint64_t {
+        const char *e = std::getenv("PS2X_GIF_DUMP");
+        return e ? std::strtoull(e, nullptr, 10) : 0ull;
+    }();
+    if (s_every == 0ull)
+        return;
+    static FILE *s_file = nullptr;
+    static uint64_t s_start = 0;
+    const uint64_t vb = g_ps2xVblankCount.load(std::memory_order_relaxed);
+    if (s_file && vb >= s_start + 2u)
+    {
+        std::fclose(s_file);
+        s_file = nullptr;
+    }
+    static uint64_t s_next = 0;
+    if (s_next == 0u)
+        s_next = s_every;
+    if (!s_file && vb >= s_next)
+    {
+        s_start = vb;
+        s_next = vb + s_every;
+        char name[64];
+        std::snprintf(name, sizeof(name), "/tmp/gifdump_%llu.bin", static_cast<unsigned long long>(vb));
+        s_file = std::fopen(name, "wb");
+    }
+    if (s_file)
+    {
+        std::fwrite(&sizeBytes, 4, 1, s_file);
+        std::fwrite(data, 1, sizeBytes, s_file);
+    }
+}
+
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
     g_ps2xGfxCounters[2].fetch_add(1, std::memory_order_relaxed);
+    if (data && sizeBytes >= 16u)
+        ps2xGifDump(data, sizeBytes);
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (!data || sizeBytes < 16 || !m_backend)
         return;
@@ -822,6 +862,7 @@ bool GS::processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes)
         return false;
     if (ps2x::native::uploadsWanted())
         ps2x::native::textures().scanGifPacket(data, sizeBytes);
+    ps2xGifDump(data, sizeBytes);
 
     if (!validatePackedGifPacket(data, sizeBytes))
         return false;

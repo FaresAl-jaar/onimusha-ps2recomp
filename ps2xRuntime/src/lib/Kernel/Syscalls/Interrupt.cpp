@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "Common.h"
 #include "Interrupt.h"
 
@@ -36,6 +37,8 @@ namespace ps2_syscalls
                                               getRegU32(ctx, 7),
                                               getRegU32(ctx, 28),
                                               getRegU32(ctx, 29));
+            std::fprintf(stderr, "[irq] Add%sHandler cause=%u handler=0x%x next=%d arg=0x%x -> id %d\n", dmac ? "Dmac" : "Intc",
+                         getRegU32(ctx, 4), getRegU32(ctx, 5), static_cast<int>(getRegU32(ctx, 6)), getRegU32(ctx, 7), id);
             setReturnS32(ctx, id);
         }
 

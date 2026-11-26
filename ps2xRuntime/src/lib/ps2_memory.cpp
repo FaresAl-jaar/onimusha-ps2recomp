@@ -2341,6 +2341,20 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
     if (!data || sizeBytes < 16)
         return;
 
+    if (static const bool s_pathLog = std::getenv("PS2X_GIF_PATH_LOG") != nullptr; s_pathLog)
+    {
+        static uint64_t s_count[3] = {}, s_bytes[3] = {}, s_masked = 0, s_total = 0;
+        const int id = pathId == GifPathId::Path1 ? 0 : pathId == GifPathId::Path2 ? 1 : 2;
+        ++s_count[id];
+        s_bytes[id] += sizeBytes;
+        if (pathId == GifPathId::Path3 && m_path3Masked)
+            ++s_masked;
+        if ((++s_total % 20000u) == 0u)
+            std::fprintf(stderr, "[gifpath] path1 %llu (%llu KB) path2 %llu (%llu KB) path3 %llu (%llu KB), path3 while masked %llu, masked fifo %zu\n",
+                         (unsigned long long)s_count[0], (unsigned long long)(s_bytes[0] >> 10), (unsigned long long)s_count[1],
+                         (unsigned long long)(s_bytes[1] >> 10), (unsigned long long)s_count[2], (unsigned long long)(s_bytes[2] >> 10),
+                         (unsigned long long)s_masked, m_path3MaskedFifo.size());
+    }
     if (pathId == GifPathId::Path3)
     {
         if (m_path3Masked)
