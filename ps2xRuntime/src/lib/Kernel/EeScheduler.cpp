@@ -1987,6 +1987,13 @@ void EeScheduler::processEvent(const EeEvent &event)
                     std::fwrite(m_rdram, 1, PS2_RAM_SIZE, f);
                     std::fclose(f);
                 }
+                std::snprintf(name, sizeof(name), "/tmp/gsvram_%llu.bin", static_cast<unsigned long long>(vb));
+                if (const uint8_t *vram = m_runtime.memory().getGSVRAM())
+                    if (FILE *f = std::fopen(name, "wb"))
+                    {
+                        std::fwrite(vram, 1, 4u * 1024u * 1024u, f);
+                        std::fclose(f);
+                    }
             }
         }
         completeVSync(m_vsyncTick);

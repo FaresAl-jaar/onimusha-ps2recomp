@@ -2311,7 +2311,8 @@ void GSNativeBackend::flushBatch()
     glUniform1i(m_uniforms.sampler, 0);
     glUniform1i(m_uniforms.tfx, context.tex0.tfx);
     glUniform1i(m_uniforms.tcc, context.tex0.tcc);
-    glUniform1i(m_uniforms.fog, state.prim.fge ? 1 : 0);
+    static const bool s_noFog = std::getenv("PS2X_GS_NOFOG") != nullptr; // diagnostics: fog off
+    glUniform1i(m_uniforms.fog, state.prim.fge && !s_noFog ? 1 : 0);
     glUniform3f(m_uniforms.fogColor, state.fogR / 255.0f, state.fogG / 255.0f, state.fogB / 255.0f);
     // TEST: ATE, ATST, AREF. A failed test keeps the pixel unwritten (AFAIL KEEP); the other AFAIL modes draw the
     // batch a second time for the failing pixels under their write masks.

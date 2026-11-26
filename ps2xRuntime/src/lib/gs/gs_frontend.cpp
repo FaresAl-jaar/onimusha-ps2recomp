@@ -1068,6 +1068,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
         vtx.u = m_curU;
         vtx.v = m_curV;
         vtx.fog = f;
+        m_curFog = f;
         g_ps2xGfxCounters[adk ? 4 : 5].fetch_add(1, std::memory_order_relaxed);
         vertexKick(!adk);
         break;
@@ -1140,6 +1141,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
         vtx.u = m_curU;
         vtx.v = m_curV;
         vtx.fog = static_cast<uint8_t>((hi >> 36) & 0xFF);
+        m_curFog = vtx.fog;
         vertexKick(false);
         break;
     }
@@ -1319,6 +1321,7 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
         vtx.y = static_cast<float>((value >> 16) & 0xFFFF) / 16.0f;
         vtx.z = static_cast<double>((value >> 32) & 0xFFFFFF);
         vtx.fog = static_cast<uint8_t>((value >> 56) & 0xFF);
+        m_curFog = vtx.fog; // XYZF sets the vertex fog that later XYZ2 vertices keep
         vtx.r = m_curR;
         vtx.g = m_curG;
         vtx.b = m_curB;
@@ -1380,6 +1383,12 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
     }
     case GS_REG_FOG:
         m_curFog = static_cast<uint8_t>((value >> 56) & 0xFF);
+        if (static const bool s_fogLog = std::getenv("PS2X_GS_FOG_LOG") != nullptr; s_fogLog)
+        {
+            static uint32_t s_logged = 0;
+            if (s_logged++ < 50u)
+                std::fprintf(stderr, "[gs fog] FOG = %u\n", static_cast<unsigned>(m_curFog));
+        }
         break;
     case GS_REG_TEX1_1:
     case GS_REG_TEX1_2:
