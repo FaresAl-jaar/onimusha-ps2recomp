@@ -1,5 +1,7 @@
 #include "runtime/ps2_vu1.h"
 #include "../ps2x_prof.h"
+#include <vector>
+#include <atomic>
 #include "runtime/gs/ps2_gif_arbiter.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ps2_memory.h"
@@ -1868,6 +1870,41 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
     m_state.itop = itop;
     m_state.stoppedByD = false;
     m_state.stoppedByT = false;
+    // PS2X_VU1_DUMP_IMAGE=<census .bin>: when the loaded code starts like that image, write VU1 data,
+    // VI and TOP at each MSCNT (after VBlank 9000, first 40) to /tmp/vu1dump_<n>.bin.
+    if (m_unit == Unit::VU1)
+    {
+        static std::vector<uint8_t> s_image = []() {
+            std::vector<uint8_t> image;
+            if (const char *path = std::getenv("PS2X_VU1_DUMP_IMAGE"))
+                if (FILE *f = std::fopen(path, "rb"))
+                {
+                    image.resize(0x420u);
+                    image.resize(std::fread(image.data(), 1, image.size(), f));
+                    std::fclose(f);
+                }
+            return image;
+        }();
+        static uint32_t s_dumps = 0;
+        extern std::atomic<uint64_t> g_ps2xVblankCount;
+        if (!s_image.empty() && s_dumps < 40u && codeSize >= s_image.size() &&
+            g_ps2xVblankCount.load(std::memory_order_relaxed) > 9000u &&
+            std::memcmp(vuCode, s_image.data(), s_image.size()) == 0)
+        {
+            char name[64];
+            std::snprintf(name, sizeof(name), "/tmp/vu1dump_%u.bin", s_dumps++);
+            if (FILE *f = std::fopen(name, "wb"))
+            {
+                std::fwrite(vuData, 1, dataSize, f);
+                std::fwrite(m_state.vi, sizeof(m_state.vi), 1, f);
+                std::fwrite(&top, 4, 1, f);
+                std::fwrite(&itop, 4, 1, f);
+                std::fwrite(&m_state.pc, 4, 1, f);
+                std::fwrite(m_state.vf, sizeof(m_state.vf), 1, f);
+                std::fclose(f);
+            }
+        }
+    }
     // MSCNT continues where the last E bit stopped: a lifted image takes it from there too.
     if (m_unit == Unit::VU1 && !vu1census::enabled() &&
         VU1Lifted::tryExecute(*this, vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles))
