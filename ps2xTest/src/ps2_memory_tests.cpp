@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <vector>
 
 namespace
@@ -1011,6 +1012,40 @@ void register_ps2_memory_tests()
             t.Equals(firstBytes[1], static_cast<uint8_t>(0xD2u), "DIRECTHL packet should drain after PATH3 IMAGE packet");
         });
 
+        tc.Run("PATH3 splits raw IMAGE data from the next tag across GIF transfers", [](TestCase &t)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "initialize EE memory");
+            using Words = std::vector<uint64_t>;
+            std::vector<Words> received;
+            mem.setGifPacketCallback([&](const uint8_t *data, uint32_t size)
+            {
+                Words &words = received.emplace_back(size / sizeof(uint64_t));
+                std::memcpy(words.data(), data, size);
+            });
+            auto send = [&](std::initializer_list<uint64_t> words)
+            {
+                mem.processGIFPacket(reinterpret_cast<const uint8_t *>(words.begin()),
+                                     static_cast<uint32_t>(words.size() * sizeof(uint64_t)));
+            };
+
+            const uint64_t open = makeGifTag(3, GIF_FMT_IMAGE, 0, false);
+            const uint64_t chunk = makeGifTag(1, GIF_FMT_IMAGE, 0, false);
+            const uint64_t end = makeGifTag(0, GIF_FMT_PACKED, 1, true);
+            send({open, 0, 11, 12});
+            send({21, 22});
+            send({31, 32, end, 0});
+            t.Equals(received, std::vector<Words>{{open, 0, 11, 12}, {chunk, 0, 21, 22},
+                                                  {chunk, 0, 31, 32}, {end, 0}},
+                     "consume exactly the IMAGE payload and preserve its clear EOP bit");
+
+            send({open, 0});
+            mem.writeIORegister(0x10003000u, 1u); // GIF_CTRL.RST
+            received.clear();
+            send({end, 0});
+            t.Equals(received, std::vector<Words>{{end, 0}}, "a GIF reset discards the unfinished IMAGE");
+        });
+
         tc.Run("GIF DMA mode0 copies RDRAM packet and clears channel", [](TestCase &t)
         {
             PS2Memory mem;
@@ -1795,11 +1830,9 @@ void register_ps2_memory_tests()
                 uint8_t *rdram = mem.getRDRAM();
                 writeDmaTag(rdram, kTag0, makeDmaTag(1u, 3u, kRefData, true)); // REF + IRQ
                 writeDmaTag(rdram, kTag1, makeDmaTag(1u, 7u, 0u, false));       // END
-                for (uint32_t i = 0; i < 16u; ++i)
-                {
-                    rdram[kRefData + i] = static_cast<uint8_t>(0x55u + i);
-                    rdram[kTag1 + 16u + i] = static_cast<uint8_t>(0x77u + i);
-                }
+                // Each run submits a complete GIF stream, with one empty tag per DMA payload.
+                writeU64(rdram, kRefData, makeGifTag(0u, GIF_FMT_PACKED, 1u, true));
+                writeU64(rdram, kTag1 + 16u, makeGifTag(0u, GIF_FMT_PACKED, 2u, true));
 
                 std::vector<std::vector<uint8_t>> captured;
                 mem.setGifPacketCallback([&](const uint8_t *data, uint32_t sizeBytes)

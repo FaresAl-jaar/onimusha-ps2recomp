@@ -28,61 +28,6 @@ enum VIFCmd : uint8_t
     VIF_DIRECTHL = 0x51,
 };
 
-namespace
-{
-    constexpr uint8_t kGifFmtImage = 2u;
-
-    uint32_t pendingGifImageQwc(const uint8_t *data, uint32_t sizeBytes)
-    {
-        if (!data || sizeBytes < 16u)
-            return 0u;
-
-        uint32_t offset = 0u;
-        while (offset + 16u <= sizeBytes)
-        {
-            uint64_t tagLo = 0u;
-            std::memcpy(&tagLo, data + offset, sizeof(tagLo));
-            offset += 16u;
-
-            const uint32_t nloop = static_cast<uint32_t>(tagLo & 0x7FFFu);
-            const uint8_t flg = static_cast<uint8_t>((tagLo >> 58) & 0x3u);
-            uint32_t nreg = static_cast<uint32_t>((tagLo >> 60) & 0xFu);
-            if (nreg == 0u)
-                nreg = 16u;
-
-            uint64_t payloadBytes = 0u;
-            if (flg == 0u) // PACKED
-            {
-                payloadBytes = static_cast<uint64_t>(nloop) * nreg * 16ull;
-            }
-            else if (flg == 1u) // REGLIST, padded to a quadword
-            {
-                payloadBytes = static_cast<uint64_t>(nloop) * nreg * 8ull;
-                payloadBytes = (payloadBytes + 15ull) & ~15ull;
-            }
-            else if (flg == kGifFmtImage || flg == 3u) // FLG=3 ("disabled" in the GS manual) behaves exactly like IMAGE: NLOOP qwords of image data.
-            {
-                payloadBytes = static_cast<uint64_t>(nloop) * 16ull;
-                const uint64_t availableBytes = sizeBytes - offset;
-                if (payloadBytes > availableBytes)
-                {
-                    return static_cast<uint32_t>((payloadBytes - availableBytes) / 16ull);
-                }
-            }
-            else
-            {
-                return 0u;
-            }
-
-            if (payloadBytes > static_cast<uint64_t>(sizeBytes - offset))
-                return 0u;
-            offset += static_cast<uint32_t>(payloadBytes);
-        }
-
-        return 0u;
-    }
-}
-
 void PS2Memory::processVIF0Data(uint32_t srcPhys, uint32_t sizeBytes)
 {
     if (sizeBytes == 0u || srcPhys >= PS2_RAM_SIZE)
@@ -314,19 +259,9 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
     // many qwords it used. The GIF keeps waiting for the image data between DIRECT commands.
     auto continuePendingImage = [&](const uint8_t *src, uint32_t availableQw) -> uint32_t
     {
-        const uint32_t chunkQw = std::min<uint32_t>(m_vif1PendingPath2ImageQwc, availableQw);
-        if (chunkQw == 0u)
-            return 0u;
-        std::vector<uint8_t> imagePacket(16u + static_cast<size_t>(chunkQw) * 16u, 0u);
-        const uint64_t imageTag =
-            static_cast<uint64_t>(chunkQw & 0x7FFFu) |
-            ((m_vif1PendingPath2ImageQwc == chunkQw) ? (1ull << 15) : 0ull) |
-            (static_cast<uint64_t>(kGifFmtImage) << 58);
-        std::memcpy(imagePacket.data(), &imageTag, sizeof(imageTag));
-        std::memcpy(imagePacket.data() + 16u, src, static_cast<size_t>(chunkQw) * 16u);
-        submitGifPacket(GifPathId::Path2, imagePacket.data(), static_cast<uint32_t>(imagePacket.size()), true, m_vif1PendingPath2DirectHl);
-        m_vif1PendingPath2ImageQwc -= chunkQw;
-        if (m_vif1PendingPath2ImageQwc == 0u)
+        const uint32_t chunkQw = submitImageContinuation(GifPathId::Path2, m_vif1Path2Image,
+                                                         src, availableQw, true, m_vif1PendingPath2DirectHl);
+        if (m_vif1Path2Image.qwc == 0u)
             m_vif1PendingPath2DirectHl = false;
         return chunkQw;
     };
@@ -369,10 +304,10 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             {
                 const uint8_t *rest = data + imageQw * 16u;
                 submitGifPacket(GifPathId::Path2, rest, restQw * 16u, true, s_vif1DirectRemainingHl);
-                const uint32_t pendingImageQw = pendingGifImageQwc(rest, restQw * 16u);
-                if (pendingImageQw != 0u)
+                const GifImageTail tail = pendingGifImage(rest, restQw * 16u);
+                if (tail.qwc != 0u)
                 {
-                    m_vif1PendingPath2ImageQwc = pendingImageQw;
+                    m_vif1Path2Image = tail;
                     m_vif1PendingPath2DirectHl = s_vif1DirectRemainingHl;
                 }
             }
@@ -385,7 +320,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 
     while (pos + 4 <= sizeBytes)
     {
-        if (m_vif1PendingPath2ImageQwc != 0u && !directFollows(pos))
+        if (m_vif1Path2Image.qwc != 0u && !directFollows(pos))
         {
             const uint32_t availableQw = (sizeBytes - pos) / 16u;
             if (availableQw == 0u)
@@ -405,7 +340,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 std::memcpy(w, data + pos, std::min<uint32_t>(16u, sizeBytes - pos));
                 if (s_logged++ < 200u)
                     std::fprintf(stderr, "[vif1 image] open IMAGE qwc=%u at pos %u of %u, next words %08x %08x %08x %08x%s\n",
-                                 m_vif1PendingPath2ImageQwc, pos, sizeBytes, w[0], w[1], w[2], w[3],
+                                 m_vif1Path2Image.qwc, pos, sizeBytes, w[0], w[1], w[2], w[3],
                                  s_legacyImage ? " (swallowed)" : " (decoded as VIFcodes)");
             }
             if (s_legacyImage)
@@ -616,10 +551,10 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                     const uint8_t *rest = data + pos + imageQw * 16u;
                     submitGifPacket(GifPathId::Path2, rest, restQw * 16u, true, directHl);
 
-                    const uint32_t pendingImageQw = pendingGifImageQwc(rest, restQw * 16u);
-                    if (pendingImageQw != 0u)
+                    const GifImageTail tail = pendingGifImage(rest, restQw * 16u);
+                    if (tail.qwc != 0u)
                     {
-                        m_vif1PendingPath2ImageQwc = pendingImageQw;
+                        m_vif1Path2Image = tail;
                         m_vif1PendingPath2DirectHl = directHl;
                     }
                 }

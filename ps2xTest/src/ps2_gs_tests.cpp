@@ -12,6 +12,7 @@
 #include "Stubs/Helpers/Support.h"
 #include "Stubs/GS.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -3945,7 +3946,49 @@ void register_ps2_gs_tests()
                      "triangle fan quad should light at least one framebuffer row");
         });
 
-        tc.Run("sceGsExecLoadImage and sceGsExecStoreImage roundtrip and free guest packets", [](TestCase &t)
+        tc.Run("sceGsExecLoadImage uploads indexed textures at and above the guest heap size", [](TestCase &t)
+        {
+            PS2Runtime runtime;
+            t.IsTrue(runtime.memory().initialize(), "initialize EE memory");
+            uint8_t *const ram = runtime.memory().getRDRAM();
+            constexpr uint32_t header = 0x6b0d70u;
+            constexpr uint32_t pixels = 0x10000u;
+            constexpr uint32_t heap = 0x936700u;
+            runtime.configureGuestHeap(heap, heap + 0x8000u);
+            std::memset(ram + heap, 0x5a, 0x8000u);
+
+            for (uint32_t width : {128u, 256u})
+            {
+                constexpr uint32_t height = 256u;
+                const uint32_t dbp = width == 128u ? 0x25c0u : 0x2640u;
+                for (uint32_t i = 0; i < width * height; ++i)
+                    ram[pixels + i] = static_cast<uint8_t>((i ^ (i >> 8) ^ height) + 1u);
+
+                R5900Context ctx{};
+                setRegU32(ctx, 4, 0x80000000u | header);
+                setRegU32(ctx, 5, dbp);
+                setRegU32(ctx, 6, width / 64u);
+                setRegU32(ctx, 7, GS_PSM_T8);
+                setRegU32(ctx, 10, width);
+                setRegU32(ctx, 11, height);
+                ps2_stubs::sceGsSetDefLoadImage(ram, &ctx, &runtime);
+                setRegU32(ctx, 5, 0x20000000u | pixels);
+                ps2_stubs::sceGsExecLoadImage(ram, &ctx, &runtime);
+                t.Equals(getRegU32Test(ctx, 2), 0u, "upload succeeds with a 32 KiB guest heap");
+                for (uint32_t i = 0; i < width * height; ++i)
+                {
+                    if (runtime.gs().ReadVram(GS_PSM_T8, dbp, width / 64u, i % width, i / width) != ram[pixels + i])
+                    {
+                        t.Fail("incorrect texel at byte " + std::to_string(i));
+                        break;
+                    }
+                }
+            }
+            t.IsTrue(std::all_of(ram + heap, ram + heap + 0x8000u, [](uint8_t b) { return b == 0x5a; }),
+                     "uploads should leave the guest heap intact");
+        });
+
+        tc.Run("sceGsExecLoadImage and sceGsExecStoreImage roundtrip CT32 pixels", [](TestCase &t)
         {
             PS2Runtime runtime;
             t.IsTrue(runtime.memory().initialize(), "runtime memory initialize should succeed");
@@ -3979,23 +4022,21 @@ void register_ps2_gs_tests()
             t.Equals(static_cast<int32_t>(getRegU32Test(loadCtx, 2)), 0,
                      "sceGsExecLoadImage should succeed for a simple CT32 upload");
             uint64_t loadTag = 0u;
-            std::memcpy(&loadTag, rdram + runtime.guestHeapBase(), sizeof(loadTag));
+            std::memcpy(&loadTag, rdram + kImageAddr, sizeof(loadTag));
             t.Equals(loadTag, 0x1000000000000004ull,
                      "sceGsExecLoadImage should populate the packed A+D GIF tag in guest RAM");
             uint64_t loadReg1 = 0u;
             uint64_t loadReg2 = 0u;
             uint64_t loadReg3 = 0u;
             uint64_t loadReg4 = 0u;
-            std::memcpy(&loadReg1, rdram + runtime.guestHeapBase() + 24u, sizeof(loadReg1));
-            std::memcpy(&loadReg2, rdram + runtime.guestHeapBase() + 40u, sizeof(loadReg2));
-            std::memcpy(&loadReg3, rdram + runtime.guestHeapBase() + 56u, sizeof(loadReg3));
-            std::memcpy(&loadReg4, rdram + runtime.guestHeapBase() + 72u, sizeof(loadReg4));
+            std::memcpy(&loadReg1, rdram + kImageAddr + 24u, sizeof(loadReg1));
+            std::memcpy(&loadReg2, rdram + kImageAddr + 40u, sizeof(loadReg2));
+            std::memcpy(&loadReg3, rdram + kImageAddr + 56u, sizeof(loadReg3));
+            std::memcpy(&loadReg4, rdram + kImageAddr + 72u, sizeof(loadReg4));
             t.Equals(loadReg1, 0x50ull, "sceGsExecLoadImage should encode BITBLTBUF as A+D register 0x50");
             t.Equals(loadReg2, 0x51ull, "sceGsExecLoadImage should encode TRXPOS as A+D register 0x51");
             t.Equals(loadReg3, 0x52ull, "sceGsExecLoadImage should encode TRXREG as A+D register 0x52");
             t.Equals(loadReg4, 0x53ull, "sceGsExecLoadImage should encode TRXDIR as A+D register 0x53");
-            expectGuestHeapReusable(t, runtime,
-                                    "sceGsExecLoadImage should free its temporary GIF packet");
 
             R5900Context storeCtx{};
             writeGsImageTest(rdram, kImageAddr, image);

@@ -29,34 +29,17 @@ Speed on the user's PC (RTX 4090): menus 55 to 60, Stage 1 19 to 25 VBlanks per 
 4. **XYZF fog.** XYZF2/XYZF3 now set the fog value for later XYZ2 vertices. The game never writes the FOG register. Visual effect not confirmed.
 5. **VU1 ahead of time translation.** All nine Stage 1 micro images are lifted to C++ (`tools/vu1lift`, based on Gitaroo Man Native's MIT lifter). About 3.5 million runs under `PS2X_VU1_VERIFY=1` without a mismatch.
 
-### Open problem 1: characters are very dark
+### Stage 1 character textures
 
-Soki and the enemies have the right shape but render almost black, in both the GPU and the CPU renderer (CPU slightly brighter, Soki's head and highlights visible).
+The Disc 1 libgraph routine `sceGsExecLoadImage` at `0x1039b8` sends the six-qword header on GIF DMA channel 2 and then sends the caller's pixel buffer on the same channel. The old runtime combined the two in a guest-heap allocation. Disc 1 sets up a 32 KiB heap at `0x936700` during startup. A 32 KiB image plus its 96-byte header already exceeds the whole heap. The stub returned `-1` before starting DMA, explaining both the missing transfers and the absence of hardware polling. Small textures and palettes still fitted. For example, `0x25c0` holds a 128×256 PSMT8 texture (32 KiB), and `0x2640` and `0x2740` each hold a 256×256 PSMT8 texture (64 KiB).
 
-Verified equal to PCSX2:
+The runtime now sends both buffers from their existing addresses. PATH3 tracks how many image qwords the header announced so the next DMA can supply the pixels. The regression test uploads the 32 KiB and 64 KiB examples with the original heap size, checks each texel in GS memory and checks that the guest heap stayed intact.
 
-* TEX0 of Soki's batches (for example `0x2003c681dd30bd60`: PSMT8, CSM1 CLUT, CLD 1).
-* CLUT and texture bytes in GS memory (compare `ours/gsvram_stage1.bin.zst` with the GS memory inside `pcsx2/stage1_soki_closeup.gs.zst`; in the PCSX2 GS dump state the 4 MiB memory starts at `state_size - 4 MiB - 84`).
-* S, T and Q of every vertex of a Soki batch (TBP 0x3d60) compared vertex by vertex.
+**Stage 1 replay.** Twelve large texture ranges were zero in the port's capture. To test the upload independently of the game loader, we recovered their pixels from the PCSX2 street dump and passed each texture through the recompiled game's upload routine at `0x1341c0`. It constructs the header at `0x6b0d70`, calls `sceGsExecLoadImage` at `0x134244` and calls `sceGsSyncPath` without checking the upload's return value. We also reuploaded the known-good 16 KiB texture at `0x3d60`. On `e246fae` only the small control arrived. With the fix all 13 GS texture ranges matched the reference byte for byte. Replaying the port's same 7,624 GIF packets on both versions showed Soki's blue armour and red sword and restored the enemy textures in both the CPU and OpenGL backends. OpenGL used Mesa llvmpipe on Linux. A fresh boot into Stage 1 on Windows is still to be verified.
 
-Different from PCSX2:
+**Earlier observations.** The texture, CLUT and vertex ST/Q previously compared at `0x3d60` already matched PCSX2. That texture is the small control. The PCSX2 and port captures come from different moments, so individual vertex colours can differ. The replay held all vertex inputs fixed. `PS2X_DMA_START_LOG`, `PS2X_IO_READ_LOG` and the GS transfer-range logs documented the pre-fix behaviour. The VIF1 DIRECT and PATH2 continuation fixes were not exercised by these PATH3 uploads.
 
-* Vertex colours. PCSX2 gives values like (165,169,164); ours often exactly (72,77,77). That is the ambient term alone. The skinning program (`ours/census_run2/vu1_b2e94bcee0f3b344.bin`, 34 percent of VU1 cycles) computes `colour = vf9 * max(N.L + 0.4, 0) + vf10 * 1 + ...` with vf5 to vf8 as the light matrix and vf9 to vf12 as light colours (vf10 = ambient 72.6, 77.6, 77.1).
-* An offline evaluation of N.L + 0.4 on our VU1 data (`ours/vu1_dumps`, `scripts/vua.py`) gives values between about -0.2 and 0.96, so most vertices should be lit. Either the program computes something else than this simplified reading, or the colours are right and the darkness comes from the GS side. Note the PCSX2 dump and our dump are not the same moment, so per vertex lighting can legitimately differ.
-
-Update 2026-11-27 (with Codex): the real cause is missing texture data. 152 pages of our GS memory (blocks 0x1ee0 to about 0x2800, the character textures, Soki's armour among them) are all zero while PCSX2 has data there. Replaying the PCSX2 dump with only those pages filled in makes Soki and the enemies coloured with the same draws and lighting. A full transfer log (`PS2X_GS_TRX_LOG=1 PS2X_GS_TRX_LO=0x1ee0 PS2X_GS_TRX_HI=0x2800`, uploads and local copies, each destination once) shows that in our whole run no transfer ever targets 0x1ee0 to 0x24c0; only 0x24e0, 0x2540, 0x2560 and 0x2580 arrive (around VBlank 8206 to 8237, during the Stage 1 load). So the EE never issues these uploads in our port: the cause is on the game side (texture manager, a load that silently fails, or game state), not in the GS backends.
-
-Update 2026-11-27, later: how the uploads are sent. With `PS2X_DMA_START_LOG=1` every texture and CLUT upload in the Stage 1 load is a GIF DMA in normal mode from one bounce buffer at EE 0x00936700: qwc 70 for a 16x16 CT32 CLUT (64 data qwords plus 6 header qwords), qwc 518 for 128x128 T4, qwc 1030 for 128x128 T8 or 128x64 T8 pairs. The largest transfer ever seen is 1030 qwords. Uploads that arrive: 0x24e0, 0x2540, 0x2560, 0x2580, 0x2f40, 0x2f80, 0x3040 to 0x32e0, 0x39a0 to 0x3a00. Missing are exactly the next entries of each batch (0x25c0, 0x2640, 0x2740 after 0x2580; 0x3320 to 0x3620 after 0x32e0; 0x3a40 after 0x3a00), and their CLUTs do arrive. The missing ones are the larger textures (256 wide, about 4096 data qwords). So the open question is how the game sends a texture bigger than one bounce buffer load (several chunks? another path?) and why that never happens in our port: a DMA or GIF status the game polls between chunks (D2_CHCR STR, GIF_STAT, D_STAT CIS) is the first suspect. `PS2X_DMA_CHAIN_LOG` and `PS2X_VIF_DIRECT_LOG` exist as well; a DIRECT that runs past the end of a transfer now continues in the next one (never seen in Stage 1).
-
-Also checked: in the Stage 1 load window (VBlank 8236 to 8240) the game reads no I/O register through read32 at all (`PS2X_IO_READ_LOG=1`), so it is not stuck polling a DMA or GIF status; it simply never asks for the big uploads. The bounce buffer 0x00936700 is built in `sub_00177610` (0x177610, `lui $v0,0x93; addiu $v0,$v0,0x6700` at 0x17794c). Next: find the texture loader that calls it and the size check or slot logic that skips textures larger than 1024 data qwords, ideally by stepping the same code in PCSX2's debugger at the 0x25c0 upload.
-
-Older suggested next steps (before the update):
-
-1. Replay `pcsx2/stage1_soki_closeup.gs.zst` through our GS backends (CPU and GPU) and compare with `pcsx2/stage1_soki_closeup.png`. Dark output means a GS problem, bright output means the problem is before the GS.
-2. Run the full skinning program on one VU1 dump in isolation (our VU1 interpreter can be driven directly) and compare its XGKICK output with the vertex colours in our GIF dump.
-3. Check TFX, TCC, TEXA, ALPHA and FBA for the character draws against the PCSX2 dump.
-
-### Open problem 2: speed in 3D
+### Open problem: speed in 3D
 
 Stage 1 runs at 19 to 25 of 60. VU1 is mostly lifted now. On the Linux server (2 cores, software OpenGL) the profile is dominated by llvmpipe and is not representative. The next Windows log with the new `[speed]` timing line will show whether the GS backend, the IOP or the game code dominates.
 

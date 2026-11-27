@@ -405,8 +405,9 @@ bool PS2Memory::initialize(size_t ramSize)
     }
     m_codeRegions.clear();
     m_path3Masked = false;
+    m_path3Image = {};
     m_path3MaskedFifo.clear();
-    m_vif1PendingPath2ImageQwc = 0u;
+    m_vif1Path2Image = {};
     m_vif1PendingPath2DirectHl = false;
     resetEeTimers();
 
@@ -1457,6 +1458,13 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
 
     m_ioRegisters[address] = value;
 
+    if (address == 0x10003000u && (value & 1u) != 0u) // GIF_CTRL.RST
+    {
+        m_path3Image = {};
+        m_vif1Path2Image = {};
+        m_path3MaskedFifo.clear();
+    }
+
     if (address >= 0x10003C00u && address < 0x10003E00u)
     {
         m_vifWriteCount.fetch_add(1, std::memory_order_relaxed);
@@ -1468,7 +1476,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
             {
                 const bool wasPath3Masked = m_path3Masked;
                 std::memset(&vif1_regs, 0, sizeof(vif1_regs));
-                m_vif1PendingPath2ImageQwc = 0u;
+                m_vif1Path2Image = {};
                 m_vif1PendingPath2DirectHl = false;
                 m_path3Masked = false;
                 if (wasPath3Masked)
@@ -2388,7 +2396,70 @@ void PS2Memory::flushMaskedPath3Packets(bool drainImmediately)
         m_gifArbiter->drain();
 }
 
+PS2Memory::GifImageTail PS2Memory::pendingGifImage(const uint8_t *data, uint32_t sizeBytes)
+{
+    uint32_t available = sizeBytes / 16u;
+    while (available != 0u)
+    {
+        uint64_t tag;
+        std::memcpy(&tag, data, sizeof(tag));
+        --available;
+        const uint32_t loops = tag & 0x7fffu;
+        const uint32_t format = (tag >> 58) & 3u;
+        uint32_t payload = loops;
+        if (format == GIF_FMT_PACKED || format == GIF_FMT_REGLIST)
+        {
+            const uint32_t nreg = tag >> 60;
+            payload *= nreg ? nreg : 16u;
+            if (format == GIF_FMT_REGLIST)
+                payload = (payload + 1u) / 2u;
+        }
+        if (payload > available)
+        {
+            if (format == GIF_FMT_IMAGE || format == GIF_FMT_DISABLED)
+                return {payload - available, (tag & 0x8000u) != 0u};
+            return {};
+        }
+        data += (1u + payload) * 16u;
+        available -= payload;
+    }
+    return {};
+}
+
+uint32_t PS2Memory::submitImageContinuation(GifPathId path, GifImageTail &tail, const uint8_t *data,
+                                            uint32_t availableQwc, bool drainImmediately, bool directHl)
+{
+    const uint32_t chunkQwc = std::min(tail.qwc, availableQwc);
+    if (chunkQwc == 0u)
+        return 0u;
+
+    tail.qwc -= chunkQwc;
+    const uint64_t tag = (uint64_t(GIF_FMT_IMAGE) << 58) | (tail.qwc == 0u && tail.eop ? 0x8000u : 0u) | chunkQwc;
+    std::vector<uint8_t> packet((1u + chunkQwc) * 16u);
+    std::memcpy(packet.data(), &tag, sizeof(tag));
+    std::memcpy(packet.data() + 16u, data, chunkQwc * 16u);
+    queueGifPacket(path, packet.data(), static_cast<uint32_t>(packet.size()), drainImmediately, directHl);
+    return chunkQwc;
+}
+
 void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool path2DirectHl)
+{
+    if (pathId == GifPathId::Path3 && data && sizeBytes >= 16u)
+    {
+        // The GIF consumes a stream of qwords. A normal-mode DMA can end
+        // immediately after an IMAGE tag, or anywhere in its pixel data.
+        const uint32_t consumed = submitImageContinuation(pathId, m_path3Image, data, sizeBytes / 16u,
+                                                           drainImmediately, false) * 16u;
+        data += consumed;
+        sizeBytes -= consumed;
+        if (sizeBytes == 0u)
+            return;
+        m_path3Image = pendingGifImage(data, sizeBytes);
+    }
+    queueGifPacket(pathId, data, sizeBytes, drainImmediately, path2DirectHl);
+}
+
+void PS2Memory::queueGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool path2DirectHl)
 {
     if (!data || sizeBytes < 16)
         return;
@@ -2454,10 +2525,7 @@ void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
 
 void PS2Memory::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
-    if (m_gifArbiter)
-        submitGifPacket(GifPathId::Path3, data, sizeBytes);
-    else if (m_gifPacketCallback && data && sizeBytes >= 16)
-        m_gifPacketCallback(data, sizeBytes);
+    submitGifPacket(GifPathId::Path3, data, sizeBytes);
 }
 
 bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint32_t chcr)
@@ -2466,7 +2534,7 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
     static constexpr uint32_t D_STAT = 0x1000E010u;
     static constexpr uint32_t D_CTRL = 0x1000E000u;
 
-    if (!m_rdram || !m_gsVRAM || m_path3Masked)
+    if (!m_rdram || !m_gsVRAM || m_path3Masked || m_path3Image.qwc != 0u)
         return false;
     if (m_gifArbiter && !m_gifArbiter->empty())
         return false;
@@ -2658,7 +2726,7 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
     static constexpr uint32_t D_STAT = 0x1000E010u;
     static constexpr uint32_t D_CTRL = 0x1000E000u;
 
-    if (!m_rdram || !m_gsVRAM || m_path3Masked)
+    if (!m_rdram || !m_gsVRAM || m_path3Masked || m_path3Image.qwc != 0u)
         return false;
     if (m_gifArbiter && !m_gifArbiter->empty())
         return false;

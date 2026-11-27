@@ -590,23 +590,25 @@ namespace ps2_stubs
         setReturnU32(ctx, terminatePacketBuilderState(rdram, ctx, runtime));
     }
 
-    static uint8_t *imagePacketMemory(uint8_t *rdram, uint32_t addr, uint32_t length)
+    static uint8_t *imagePacketMemory(uint8_t *rdram, uint32_t addr, uint32_t length, uint32_t *dmaAddr = nullptr)
     {
         uint32_t offset;
         bool scratch;
         if (!ps2ResolveGuestPointer(addr, offset, scratch))
             return nullptr;
         const uint32_t capacity = scratch ? PS2_SCRATCHPAD_SIZE : PS2_RAM_SIZE;
-        return offset < capacity && length <= capacity - offset ? getMemPtr(rdram, addr) : nullptr;
+        if (offset >= capacity || length > capacity - offset)
+            return nullptr;
+        if (dmaAddr)
+            *dmaAddr = scratch ? PS2_SCRATCHPAD_BASE + offset : offset;
+        return getMemPtr(rdram, addr);
     }
 
     void sceGsExecLoadImage(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        uint32_t imgAddr = getRegU32(ctx, 4);
-        uint32_t srcAddr = getRegU32(ctx, 5);
-
         constexpr uint32_t headerQwc = 6;
-        const uint8_t *header = imagePacketMemory(rdram, imgAddr, headerQwc * 16);
+        uint32_t headerAddr = 0u;
+        const uint8_t *header = imagePacketMemory(rdram, getRegU32(ctx, 4), headerQwc * 16u, &headerAddr);
         if (!runtime || !runtime->syncCoreSubsystems() || !header)
         {
             setReturnS32(ctx, -1);
@@ -616,34 +618,27 @@ namespace ps2_stubs
         uint64_t imageTag;
         std::memcpy(&imageTag, header + 0x50, sizeof(imageTag));
         const uint32_t imageQwc = imageTag & 0x7fff;
-        const uint32_t totalQwc = headerQwc + imageQwc;
-        const uint32_t imageBytes = imageQwc * 16;
-        const uint8_t *src = imagePacketMemory(rdram, srcAddr, imageBytes);
-        if (imageBytes && !src)
+        uint32_t pixelsAddr = 0u;
+        if (imageQwc && !imagePacketMemory(rdram, getRegU32(ctx, 5), imageQwc * 16u, &pixelsAddr))
         {
             setReturnS32(ctx, -1);
             return;
         }
 
-        uint32_t pktAddr = runtime->guestMalloc(totalQwc * 16u, 16u);
-        if (!pktAddr)
-        {
-            setReturnS32(ctx, -1);
-            return;
-        }
-        uint8_t *pkt = getMemPtr(rdram, pktAddr);
-        std::memcpy(pkt, header, headerQwc * 16);
-        if (imageBytes)
-            std::memcpy(pkt + headerQwc * 16, src, imageBytes);
-
-        constexpr uint32_t GIF_CHANNEL = 0x1000A000;
-        constexpr uint32_t CHCR_STR_MODE0 = 0x101u;
+        // libgraph starts two normal GIF DMAs. The IMAGE tag in the header
+        // consumes the second transfer directly from the caller's pixel buffer.
         auto &mem = runtime->memory();
-        mem.writeIORegister(GIF_CHANNEL + 0x10u, pktAddr);
-        mem.writeIORegister(GIF_CHANNEL + 0x20u, totalQwc & 0xFFFFu);
-        mem.writeIORegister(GIF_CHANNEL + 0x00u, CHCR_STR_MODE0);
-        mem.processPendingTransfers();
-        runtime->guestFree(pktAddr);
+        auto send = [&mem](uint32_t addr, uint32_t qwc)
+        {
+            constexpr uint32_t gifChannel = 0x1000A000u;
+            mem.writeIORegister(gifChannel + 0x10u, addr);
+            mem.writeIORegister(gifChannel + 0x20u, qwc);
+            mem.writeIORegister(gifChannel, 0x101u);
+            mem.processPendingTransfers();
+        };
+        send(headerAddr, headerQwc);
+        if (imageQwc != 0u)
+            send(pixelsAddr, imageQwc);
 
         setReturnS32(ctx, 0);
     }

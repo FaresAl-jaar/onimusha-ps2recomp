@@ -407,7 +407,18 @@ public:
     uint8_t *m_vu1Code = nullptr;
     uint8_t *m_vu1Data = nullptr;
     bool m_path3Masked = false;
-    uint32_t m_vif1PendingPath2ImageQwc = 0u;
+    struct GifImageTail
+    {
+        uint32_t qwc = 0u;
+        bool eop = false;
+    };
+    GifImageTail m_path3Image;
+    GifImageTail m_vif1Path2Image;
+    static GifImageTail pendingGifImage(const uint8_t *data, uint32_t sizeBytes);
+    uint32_t submitImageContinuation(GifPathId path, GifImageTail &tail, const uint8_t *data,
+                                     uint32_t availableQwc, bool drainImmediately, bool directHl);
+    void queueGifPacket(GifPathId path, const uint8_t *data, uint32_t sizeBytes,
+                        bool drainImmediately, bool directHl);
     bool m_vif1PendingPath2DirectHl = false;
     std::vector<std::vector<uint8_t>> m_path3MaskedFifo;
 
