@@ -987,7 +987,30 @@ uint32_t PS2Memory::read32(uint32_t address)
     }
     else if (isIoRegister(physAddr))
     {
-        return readIORegister(physAddr);
+        const uint32_t value = readIORegister(physAddr);
+        if (static const bool s_ioLog = std::getenv("PS2X_IO_READ_LOG") != nullptr; s_ioLog)
+        {
+            extern std::atomic<uint64_t> g_ps2xVblankCount;
+            static uint32_t s_logged = 0;
+            static uint32_t s_lastAddr = 0, s_lastValue = 0, s_repeat = 0;
+            const uint64_t vb = g_ps2xVblankCount.load(std::memory_order_relaxed);
+            if (vb >= 8236u && vb <= 8240u && s_logged < 20000u)
+            {
+                if (physAddr == s_lastAddr && value == s_lastValue)
+                    ++s_repeat;
+                else
+                {
+                    if (s_repeat)
+                        std::fprintf(stderr, "[io read]   (repeated %u times)\n", s_repeat);
+                    s_repeat = 0;
+                    s_lastAddr = physAddr;
+                    s_lastValue = value;
+                    ++s_logged;
+                    std::fprintf(stderr, "[io read] vb=%llu %08x -> %08x\n", (unsigned long long)vb, physAddr, value);
+                }
+            }
+        }
+        return value;
     }
 
     return 0;
