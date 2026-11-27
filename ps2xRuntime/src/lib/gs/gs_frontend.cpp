@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <unordered_set>
 #include "../ps2x_prof.h"
 #include <vector>
 #include <string>
@@ -1534,16 +1535,27 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
         {
             // Transfers that touch the character CLUT area (blocks 0x1c00..0x1f00) or copy inside GS memory.
             static uint32_t s_logged = 0;
-            const bool clutArea = m_bitbltbuf.dbp >= 0x1c00u && m_bitbltbuf.dbp < 0x1f00u;
-            if ((clutArea || m_trxdir == 2u) && s_logged++ < 400u)
+            static const uint32_t s_lo = std::getenv("PS2X_GS_TRX_LO") ? std::strtoul(std::getenv("PS2X_GS_TRX_LO"), nullptr, 0) : 0x1c00u;
+            static const uint32_t s_hi = std::getenv("PS2X_GS_TRX_HI") ? std::strtoul(std::getenv("PS2X_GS_TRX_HI"), nullptr, 0) : 0x1f00u;
+            const bool clutArea = m_bitbltbuf.dbp >= s_lo && m_bitbltbuf.dbp < s_hi;
+            static const uint64_t s_fromVb = std::getenv("PS2X_GS_TRX_VB") ? std::strtoull(std::getenv("PS2X_GS_TRX_VB"), nullptr, 0) : 0u;
+            extern std::atomic<uint64_t> g_ps2xVblankCount;
+            static const bool s_local = std::getenv("PS2X_GS_TRX_LOCAL") != nullptr;
+            if (((clutArea && (m_trxdir == 0u || m_trxdir == 2u)) || (s_local && m_trxdir == 2u)) && g_ps2xVblankCount.load() >= s_fromVb && s_logged++ < 200000u)
             {
-                extern std::atomic<uint64_t> g_ps2xVblankCount;
+                // Each distinct destination and size only once.
+                static std::unordered_set<uint64_t> s_seen;
+                const uint64_t key = (uint64_t)m_bitbltbuf.dbp | (uint64_t)m_bitbltbuf.dpsm << 14 | (uint64_t)m_trxreg.rrw << 20 |
+                                     (uint64_t)m_trxreg.rrh << 32 | (uint64_t)m_trxpos.dsay << 44;
+                if (!s_seen.insert(key).second)
+                    goto skipTrxLog;
                 std::fprintf(stderr, "[gs trx] vb=%llu dir=%u sbp=%#x sbw=%u spsm=%#x dbp=%#x dbw=%u dpsm=%#x pos=%u,%u->%u,%u size=%ux%u\n",
                              (unsigned long long)g_ps2xVblankCount.load(), m_trxdir, m_bitbltbuf.sbp, m_bitbltbuf.sbw, m_bitbltbuf.spsm,
                              m_bitbltbuf.dbp, m_bitbltbuf.dbw, m_bitbltbuf.dpsm, m_trxpos.ssax, m_trxpos.ssay, m_trxpos.dsax, m_trxpos.dsay,
                              m_trxreg.rrw, m_trxreg.rrh);
                 s_logNextImage = clutArea && m_trxdir == 0u;
             }
+        skipTrxLog:;
         }
 
         if (m_backend)

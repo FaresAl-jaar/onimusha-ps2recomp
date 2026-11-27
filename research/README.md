@@ -44,7 +44,9 @@ Different from PCSX2:
 * Vertex colours. PCSX2 gives values like (165,169,164); ours often exactly (72,77,77). That is the ambient term alone. The skinning program (`ours/census_run2/vu1_b2e94bcee0f3b344.bin`, 34 percent of VU1 cycles) computes `colour = vf9 * max(N.L + 0.4, 0) + vf10 * 1 + ...` with vf5 to vf8 as the light matrix and vf9 to vf12 as light colours (vf10 = ambient 72.6, 77.6, 77.1).
 * An offline evaluation of N.L + 0.4 on our VU1 data (`ours/vu1_dumps`, `scripts/vua.py`) gives values between about -0.2 and 0.96, so most vertices should be lit. Either the program computes something else than this simplified reading, or the colours are right and the darkness comes from the GS side. Note the PCSX2 dump and our dump are not the same moment, so per vertex lighting can legitimately differ.
 
-Suggested next steps:
+Update 2026-11-27 (with Codex): the real cause is missing texture data. 152 pages of our GS memory (blocks 0x1ee0 to about 0x2800, the character textures, Soki's armour among them) are all zero while PCSX2 has data there. Replaying the PCSX2 dump with only those pages filled in makes Soki and the enemies coloured with the same draws and lighting. A full transfer log (`PS2X_GS_TRX_LOG=1 PS2X_GS_TRX_LO=0x1ee0 PS2X_GS_TRX_HI=0x2800`, uploads and local copies, each destination once) shows that in our whole run no transfer ever targets 0x1ee0 to 0x24c0; only 0x24e0, 0x2540, 0x2560 and 0x2580 arrive (around VBlank 8206 to 8237, during the Stage 1 load). So the EE never issues these uploads in our port: the cause is on the game side (texture manager, a load that silently fails, or game state), not in the GS backends.
+
+Older suggested next steps (before the update):
 
 1. Replay `pcsx2/stage1_soki_closeup.gs.zst` through our GS backends (CPU and GPU) and compare with `pcsx2/stage1_soki_closeup.png`. Dark output means a GS problem, bright output means the problem is before the GS.
 2. Run the full skinning program on one VU1 dump in isolation (our VU1 interpreter can be driven directly) and compare its XGKICK output with the vertex colours in our GIF dump.
