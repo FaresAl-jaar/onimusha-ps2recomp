@@ -1,0 +1,44 @@
+{
+  "programs": [
+    {
+      "crc": "b13eaefb63cd44c5",
+      "image": "vu1_b13eaefb63cd44c5.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 4646,
+      "instructions": 25185532,
+      "xgkicks": 32858,
+      "entries": [
+        {"pc": 0, "count": 4646}
+      ]
+    },
+    {
+      "crc": "47cc32aa19eae567",
+      "image": "vu1_47cc32aa19eae567.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 70300,
+      "instructions": 443374694,
+      "xgkicks": 1240111,
+      "entries": [
+        {"pc": 0, "count": 70300}
+      ]
+    },
+    {
+      "crc": "00a708b942bd2831",
+      "image": "vu1_00a708b942bd2831.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 14420,
+      "instructions": 138780140,
+      "xgkicks": 173040,
+      "entries": [
+        {"pc": 0, "count": 14420}
+      ]
+    }
+  ],
+  "dropped": 0
+}

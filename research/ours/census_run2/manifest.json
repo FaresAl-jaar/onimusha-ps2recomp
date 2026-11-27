@@ -1,0 +1,109 @@
+{
+  "programs": [
+    {
+      "crc": "b13eaefb63cd44c5",
+      "image": "vu1_b13eaefb63cd44c5.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 10036,
+      "instructions": 62998622,
+      "xgkicks": 84805,
+      "entries": [
+        {"pc": 0, "count": 10036}
+      ]
+    },
+    {
+      "crc": "47cc32aa19eae567",
+      "image": "vu1_47cc32aa19eae567.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 117171,
+      "instructions": 765012766,
+      "xgkicks": 2010854,
+      "entries": [
+        {"pc": 0, "count": 117171}
+      ]
+    },
+    {
+      "crc": "e5c8fd4153d06ff6",
+      "image": "vu1_e5c8fd4153d06ff6.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 1164,
+      "instructions": 3204648,
+      "xgkicks": 5820,
+      "entries": [
+        {"pc": 0, "count": 1164}
+      ]
+    },
+    {
+      "crc": "6f203314472a83a5",
+      "image": "vu1_6f203314472a83a5.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 6001,
+      "instructions": 56359316,
+      "xgkicks": 144542,
+      "entries": [
+        {"pc": 0, "count": 6001}
+      ]
+    },
+    {
+      "crc": "b2e94bcee0f3b344",
+      "image": "vu1_b2e94bcee0f3b344.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 80008,
+      "instructions": 615004884,
+      "xgkicks": 820908,
+      "entries": [
+        {"pc": 0, "count": 80008}
+      ]
+    },
+    {
+      "crc": "7baf0b6caf67df48",
+      "image": "vu1_7baf0b6caf67df48.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 14228,
+      "instructions": 187468495,
+      "xgkicks": 175430,
+      "entries": [
+        {"pc": 0, "count": 14228}
+      ]
+    },
+    {
+      "crc": "3ee32eb7a43e9120",
+      "image": "vu1_3ee32eb7a43e9120.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 4010,
+      "instructions": 9404822,
+      "xgkicks": 13322,
+      "entries": [
+        {"pc": 0, "count": 4010}
+      ]
+    },
+    {
+      "crc": "aef054c716042877",
+      "image": "vu1_aef054c716042877.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 5671,
+      "instructions": 54568909,
+      "xgkicks": 68040,
+      "entries": [
+        {"pc": 0, "count": 5671}
+      ]
+    }
+  ],
+  "dropped": 0
+}
