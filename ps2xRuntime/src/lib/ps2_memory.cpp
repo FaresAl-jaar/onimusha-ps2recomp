@@ -1558,6 +1558,17 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                 uint32_t chcr = value;
                 uint32_t mode = (chcr >> 2) & 0x3;
 
+                if (static const bool s_startLog = std::getenv("PS2X_DMA_START_LOG") != nullptr; s_startLog)
+                {
+                    extern std::atomic<uint64_t> g_ps2xVblankCount;
+                    static uint32_t s_logged = 0;
+                    const uint64_t vb = g_ps2xVblankCount.load(std::memory_order_relaxed);
+                    const uint32_t tadr = m_ioRegisters[channelBase + 0x30];
+                    if (vb >= 8100u && !(mode == 1u && (tadr == 0x0081f450u || tadr == 0x0081f660u)) && s_logged++ < 3000u)
+                        std::fprintf(stderr, "[dma start] vb=%llu ch=%08x mode=%u madr=%08x qwc=%u tadr=%08x chcr=%08x\n",
+                                     (unsigned long long)vb, channelBase, mode, madr, qwc, tadr, chcr);
+                }
+
                 if (mode == 0 && qwc > 0)
                 {
                     enqueueTransfer(madr, qwc);
@@ -1766,6 +1777,16 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                             break;
                     }
 
+                    if (static const bool s_chainLog = std::getenv("PS2X_DMA_CHAIN_LOG") != nullptr; s_chainLog)
+                    {
+                        extern std::atomic<uint64_t> g_ps2xVblankCount;
+                        static uint32_t s_logged = 0;
+                        const uint64_t vb = g_ps2xVblankCount.load(std::memory_order_relaxed);
+                        if (vb >= 8100u && s_logged++ < 3000u)
+                            std::fprintf(stderr, "[dma chain] vb=%llu ch=%08x tags=%d bytes=%zu last tag id=%u irq=%d tie=%d next tadr=%08x asp=%u\n",
+                                         (unsigned long long)vb, channelBase, tagsProcessed, chainBuf.size(),
+                                         static_cast<unsigned>((lastTagUpper >> 12) & 7u), (lastTagUpper >> 15) & 1u, tieEnabled ? 1 : 0, tagAddr, asp);
+                    }
                     m_ioRegisters[channelBase + 0x30] = tagAddr;
                     m_ioRegisters[channelBase + 0x40] = asr0;
                     m_ioRegisters[channelBase + 0x50] = asr1;

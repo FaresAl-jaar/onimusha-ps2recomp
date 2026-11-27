@@ -297,6 +297,10 @@ void PS2Memory::processVIF1Data(uint32_t srcPhys, uint32_t sizeBytes)
     processVIF1Data(m_rdram + srcPhys, sizeBytes);
 }
 
+// DIRECT payload still owed by a VIF1 DIRECT/DIRECTHL that ran past the end of a transfer (one VIF1).
+static uint32_t s_vif1DirectRemainingQw = 0u;
+static bool s_vif1DirectRemainingHl = false;
+
 void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 {
     ps2x::prof::Scope profScope(ps2x::prof::Vif);
@@ -304,6 +308,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         return;
 
     uint32_t pos = 0;
+
 
     // Feeds qwords into a PATH2 IMAGE transfer that an earlier GIF tag left open and returns how
     // many qwords it used. The GIF keeps waiting for the image data between DIRECT commands.
@@ -343,6 +348,40 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         }
         return false;
     };
+
+    // A DIRECT whose payload ran past the end of the previous transfer continues here: the VIF keeps
+    // feeding PATH2 until the DIRECT's qword count is used up (big texture uploads span several DMA kicks).
+    if (s_vif1DirectRemainingQw != 0u)
+    {
+        const uint32_t availableQw = sizeBytes / 16u;
+        const uint32_t qwCount = std::min(s_vif1DirectRemainingQw, availableQw);
+        if (static const bool s_log = std::getenv("PS2X_VIF_DIRECT_LOG") != nullptr; s_log)
+        {
+            static uint32_t s_logged = 0;
+            if (s_logged++ < 200u)
+                std::fprintf(stderr, "[vif1 direct] continuing %u of %u remaining qwords\n", qwCount, s_vif1DirectRemainingQw);
+        }
+        if (qwCount > 0u)
+        {
+            const uint32_t imageQw = continuePendingImage(data, qwCount);
+            const uint32_t restQw = qwCount - imageQw;
+            if (restQw > 0u)
+            {
+                const uint8_t *rest = data + imageQw * 16u;
+                submitGifPacket(GifPathId::Path2, rest, restQw * 16u, true, s_vif1DirectRemainingHl);
+                const uint32_t pendingImageQw = pendingGifImageQwc(rest, restQw * 16u);
+                if (pendingImageQw != 0u)
+                {
+                    m_vif1PendingPath2ImageQwc = pendingImageQw;
+                    m_vif1PendingPath2DirectHl = s_vif1DirectRemainingHl;
+                }
+            }
+        }
+        s_vif1DirectRemainingQw -= qwCount;
+        pos = qwCount * 16u;
+        if (pos >= sizeBytes)
+            return;
+    }
 
     while (pos + 4 <= sizeBytes)
     {
@@ -589,6 +628,16 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             pos += qwCount * 16;
             if (truncated)
             {
+                // The rest of the payload comes with the next transfer.
+                s_vif1DirectRemainingQw = (imm == 0 ? 65536u : imm) - qwCount;
+                s_vif1DirectRemainingHl = (opcode == VIF_DIRECTHL);
+                if (static const bool s_log = std::getenv("PS2X_VIF_DIRECT_LOG") != nullptr; s_log)
+                {
+                    static uint32_t s_logged = 0;
+                    if (s_logged++ < 200u)
+                        std::fprintf(stderr, "[vif1 direct] DIRECT of %u qwords cut after %u, %u continue in the next transfer\n",
+                                     imm == 0 ? 65536u : imm, qwCount, s_vif1DirectRemainingQw);
+                }
                 pos = sizeBytes;
                 break;
             }
