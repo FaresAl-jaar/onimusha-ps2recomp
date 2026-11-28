@@ -1,6 +1,7 @@
 #ifndef PS2_MEMORY_H
 #define PS2_MEMORY_H
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <array>
@@ -258,6 +259,76 @@ struct JumpTable
     std::vector<uint32_t> targets; // Jump targets
 };
 
+// The EE hardware registers. Word-aligned addresses in 0x10000000..0x1000FFFF (timers, IPU, GIF, VIF, DMAC,
+// INTC, SIF) live in a flat array, everything else in a map. Same interface as the unordered_map it replaces
+// (operator[], count, find, end, clear), including "never written" for registers with no value yet. Every MMIO
+// access of the game goes through here, so a hash lookup per access was a measurable cost.
+class IoRegisterFile
+{
+public:
+    struct Iter
+    {
+        uint32_t key = 0;
+        uint32_t *value = nullptr;
+        struct Arrow
+        {
+            uint32_t first;
+            uint32_t &second;
+            Arrow *operator->() { return this; }
+        };
+        Arrow operator->() const { return Arrow{key, *value}; }
+        bool operator==(const Iter &other) const { return value == other.value; }
+        bool operator!=(const Iter &other) const { return value != other.value; }
+    };
+
+    uint32_t &operator[](uint32_t address)
+    {
+        if (inArray(address))
+        {
+            const uint32_t index = (address - kBase) >> 2u;
+            m_present[index] = 1u;
+            return m_values[index];
+        }
+        return m_other[address];
+    }
+
+    size_t count(uint32_t address) const
+    {
+        if (inArray(address))
+            return m_present[(address - kBase) >> 2u];
+        return m_other.count(address);
+    }
+
+    Iter find(uint32_t address) const
+    {
+        if (inArray(address))
+        {
+            const uint32_t index = (address - kBase) >> 2u;
+            return m_present[index] ? Iter{address, const_cast<uint32_t *>(&m_values[index])} : Iter{};
+        }
+        auto it = m_other.find(address);
+        return it == m_other.end() ? Iter{} : Iter{address, const_cast<uint32_t *>(&it->second)};
+    }
+
+    Iter end() const { return Iter{}; }
+
+    void clear()
+    {
+        std::fill(m_values.begin(), m_values.end(), 0u);
+        std::fill(m_present.begin(), m_present.end(), 0u);
+        m_other.clear();
+    }
+
+private:
+    static constexpr uint32_t kBase = 0x10000000u;
+    static constexpr uint32_t kWords = 0x10000u / 4u;
+    static bool inArray(uint32_t address) { return (address & 3u) == 0u && address - kBase < kWords * 4u; }
+
+    std::vector<uint32_t> m_values = std::vector<uint32_t>(kWords, 0u);
+    std::vector<uint8_t> m_present = std::vector<uint8_t>(kWords, 0u);
+    std::unordered_map<uint32_t, uint32_t> m_other;
+};
+
 class PS2Memory
 {
 public:
@@ -377,7 +448,7 @@ public:
     std::atomic<uint64_t> m_vu0CodeGeneration{0};
     std::atomic<uint64_t> m_vu1CodeGeneration{0};
     // I/O registers
-    std::unordered_map<uint32_t, uint32_t> m_ioRegisters;
+    IoRegisterFile m_ioRegisters;
 
     // Registers
     GSRegisters gs_regs;
