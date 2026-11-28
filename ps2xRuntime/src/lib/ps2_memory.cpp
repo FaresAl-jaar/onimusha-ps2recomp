@@ -1,3 +1,4 @@
+#include "ps2x_prof.h"
 #include <cstdio>
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_address.h"
@@ -323,6 +324,7 @@ PS2Memory::PS2Memory()
 
 PS2Memory::~PS2Memory()
 {
+    stopVif1Thread();
     if (m_rdram)
     {
         delete[] m_rdram;
@@ -882,6 +884,7 @@ int32_t PS2Memory::tlbProbe(uint32_t vpn) const
 
 uint8_t PS2Memory::read8(uint32_t address)
 {
+    syncVif1IfTouched(address);
     const bool scratch = isScratchpad(address);
     uint32_t physAddr = translateAddress(address);
 
@@ -913,6 +916,7 @@ uint8_t PS2Memory::read8(uint32_t address)
 
 uint16_t PS2Memory::read16(uint32_t address)
 {
+    syncVif1IfTouched(address);
     if (address & 1)
     {
         throw std::runtime_error("Unaligned 16-bit read at address: 0x" + std::to_string(address));
@@ -948,6 +952,7 @@ uint16_t PS2Memory::read16(uint32_t address)
 
 uint32_t PS2Memory::read32(uint32_t address)
 {
+    syncVif1IfTouched(address);
     if (address & 3)
     {
         throw std::runtime_error("Unaligned 32-bit read at address: 0x" + std::to_string(address));
@@ -1019,6 +1024,7 @@ uint32_t PS2Memory::read32(uint32_t address)
 
 uint64_t PS2Memory::read64(uint32_t address)
 {
+    syncVif1IfTouched(address);
     if (address & 7)
     {
         throw std::runtime_error("Unaligned 64-bit read at address: 0x" + std::to_string(address));
@@ -1071,6 +1077,7 @@ uint64_t PS2Memory::read64(uint32_t address)
 
 __m128i PS2Memory::read128(uint32_t address)
 {
+    syncVif1IfTouched(address);
     if (address & 15)
     {
         throw std::runtime_error("Unaligned 128-bit read at address: 0x" + std::to_string(address));
@@ -1111,6 +1118,7 @@ __m128i PS2Memory::read128(uint32_t address)
 
 void PS2Memory::write8(uint32_t address, uint8_t value)
 {
+    syncVif1IfTouched(address);
     const bool scratch = isScratchpad(address);
     uint32_t physAddr = translateAddress(address);
 
@@ -1150,6 +1158,7 @@ void PS2Memory::write8(uint32_t address, uint8_t value)
 
 void PS2Memory::write16(uint32_t address, uint16_t value)
 {
+    syncVif1IfTouched(address);
     if (address & 1)
     {
         throw std::runtime_error("Unaligned 16-bit write at address: 0x" + std::to_string(address));
@@ -1192,6 +1201,7 @@ void PS2Memory::write16(uint32_t address, uint16_t value)
 
 void PS2Memory::write32(uint32_t address, uint32_t value)
 {
+    syncVif1IfTouched(address);
     if (address & 3)
     {
         throw std::runtime_error("Unaligned 32-bit write at address: 0x" + std::to_string(address));
@@ -1252,6 +1262,7 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
 
 void PS2Memory::write64(uint32_t address, uint64_t value)
 {
+    syncVif1IfTouched(address);
     if (address & 7)
     {
         throw std::runtime_error("Unaligned 64-bit write at address: 0x" + std::to_string(address));
@@ -1308,6 +1319,7 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
 
 void PS2Memory::write128(uint32_t address, __m128i value)
 {
+    syncVif1IfTouched(address);
     if (address & 15)
     {
         throw std::runtime_error("Unaligned 128-bit write at address: 0x" + std::to_string(address));
@@ -2112,6 +2124,82 @@ void PS2Memory::processPendingTransfers()
         ~DepthGuard() { --depth; }
     } depthGuard(processingDepth);
 
+    // With the VIF1 thread: a batch of only VIF1 transfers goes to that thread; anything else first lets the
+    // thread finish and hands its GS work over, then runs here as before.
+    bool vif1Queued = false;
+    // Started here, on the thread that hands work over, so syncVif1Thread knows which thread may replay.
+    if (static const bool s_wantVif1Thread = [] {
+            // On by default; PS2X_VIF1_THREAD=0 keeps VIF1 and VU1 on the game thread.
+            const char *v = std::getenv("PS2X_VIF1_THREAD");
+            return !(v && *v == '0');
+        }();
+        s_wantVif1Thread && !m_vif1ThreadOn)
+        startVif1Thread();
+    if (m_vif1ThreadOn)
+    {
+        if (m_pendingGifTransfers.empty() && m_pendingVif0Transfers.empty() && !m_pendingVif1Transfers.empty())
+        {
+            const uint32_t fbrst = m_vif1FbrstSource ? m_vif1FbrstSource() : 0u;
+            std::vector<Vif1Job> jobs;
+            for (auto &p : m_pendingVif1Transfers)
+            {
+                ps2x::prof::count(ps2x::prof::Vif1Kicks);
+                Vif1Job job;
+                job.fbrst = fbrst;
+                if (!p.chainData.empty())
+                {
+                    g_chainSegments.erase(p.chainData.data());
+                    job.data = std::move(p.chainData);
+                }
+                else if (p.qwc > 0)
+                {
+                    uint32_t srcPhys = 0;
+                    try
+                    {
+                        srcPhys = translateAddress(p.srcAddr);
+                    }
+                    catch (const std::exception &)
+                    {
+                        continue;
+                    }
+                    const uint8_t *base = p.fromScratchpad ? m_scratchpad : m_rdram;
+                    const uint32_t regionSize = p.fromScratchpad ? PS2_SCRATCHPAD_SIZE : PS2_RAM_SIZE;
+                    uint64_t bytesLeft = static_cast<uint64_t>(p.qwc) * 16ull;
+                    bytesLeft = std::min<uint64_t>(bytesLeft, regionSize);
+                    job.data.reserve(static_cast<size_t>(bytesLeft));
+                    while (bytesLeft > 0)
+                    {
+                        if (srcPhys >= regionSize)
+                            srcPhys = 0;
+                        const uint32_t chunk = static_cast<uint32_t>(std::min<uint64_t>(bytesLeft, regionSize - srcPhys));
+                        job.data.insert(job.data.end(), base + srcPhys, base + srcPhys + chunk);
+                        bytesLeft -= chunk;
+                        srcPhys += chunk;
+                    }
+                }
+                if (!job.data.empty())
+                    jobs.push_back(std::move(job));
+            }
+            m_pendingVif1Transfers.clear();
+            vif1Queued = true;
+            if (!jobs.empty())
+            {
+                std::lock_guard<std::mutex> lock(m_vif1Mutex);
+                for (auto &job : jobs)
+                {
+                    m_vif1Jobs.push_back(std::move(job));
+                    ++m_vif1InFlight;
+                }
+                m_vif1Pending.store(true, std::memory_order_release);
+            }
+            m_vif1JobCv.notify_one();
+        }
+        else if (!m_pendingGifTransfers.empty() || !m_pendingVif0Transfers.empty() || !m_pendingVif1Transfers.empty())
+        {
+            syncVif1Thread();
+        }
+    }
+
     const bool hadGif = !m_pendingGifTransfers.empty();
     uint32_t observedGifQwc = 0u;
     for (const auto &transfer : m_pendingGifTransfers)
@@ -2132,6 +2220,7 @@ void PS2Memory::processPendingTransfers()
     for (size_t idx = 0; idx < m_pendingGifTransfers.size(); ++idx)
     {
         auto &p = m_pendingGifTransfers[idx];
+        ps2x::prof::count(ps2x::prof::GifKicks);
         if (!p.chainData.empty())
         {
             m_seenGifCopy = true;
@@ -2252,10 +2341,11 @@ void PS2Memory::processPendingTransfers()
     }
     m_pendingVif0Transfers.clear();
 
-    const bool hadVif1 = !m_pendingVif1Transfers.empty();
+    const bool hadVif1 = vif1Queued || !m_pendingVif1Transfers.empty();
     for (size_t vif1Index = 0; vif1Index < m_pendingVif1Transfers.size(); ++vif1Index)
     {
         auto p = std::move(m_pendingVif1Transfers[vif1Index]);
+        ps2x::prof::count(ps2x::prof::Vif1Kicks);
         if (!p.chainData.empty())
         {
             ActiveChainScope chainScope(p.chainData);
@@ -2444,6 +2534,8 @@ uint32_t PS2Memory::submitImageContinuation(GifPathId path, GifImageTail &tail, 
 
 void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool path2DirectHl)
 {
+    if (!onVif1Thread() && m_vif1Pending.load(std::memory_order_acquire) && !m_vif1Replaying)
+        syncVif1Thread();
     if (pathId == GifPathId::Path3 && data && sizeBytes >= 16u)
     {
         // The GIF consumes a stream of qwords. A normal-mode DMA can end
@@ -2463,6 +2555,10 @@ void PS2Memory::queueGifPacket(GifPathId pathId, const uint8_t *data, uint32_t s
 {
     if (!data || sizeBytes < 16)
         return;
+    if (vif1Capture(pathId, data, sizeBytes, drainImmediately, path2DirectHl))
+        return;
+    if (m_vif1Pending.load(std::memory_order_acquire) && !m_vif1Replaying)
+        syncVif1Thread();
 
     if (static const bool s_pathLog = std::getenv("PS2X_GIF_PATH_LOG") != nullptr; s_pathLog)
     {
@@ -3056,4 +3152,146 @@ void PS2Memory::clearModifiedFlag(uint32_t address, uint32_t size)
             }
         }
     }
+}
+
+
+// ---- VIF1 thread ----------------------------------------------------------------------------------------
+
+namespace
+{
+    thread_local bool t_onVif1Thread = false;
+}
+
+bool PS2Memory::onVif1Thread()
+{
+    return t_onVif1Thread;
+}
+
+void PS2Memory::startVif1Thread()
+{
+    if (m_vif1ThreadOn)
+        return;
+    m_vif1OwnerThread = std::this_thread::get_id();
+    m_vif1Stop = false;
+    m_vif1ThreadOn = true;
+    m_vif1Thread = std::thread([this] { vif1ThreadMain(); });
+    std::fprintf(stderr, "[vif1] VIF1 and VU1 run on their own thread\n");
+}
+
+void PS2Memory::stopVif1Thread()
+{
+    if (!m_vif1ThreadOn)
+        return;
+    {
+        std::lock_guard<std::mutex> lock(m_vif1Mutex);
+        m_vif1Stop = true;
+    }
+    m_vif1JobCv.notify_all();
+    if (m_vif1Thread.joinable())
+        m_vif1Thread.join();
+    m_vif1ThreadOn = false;
+}
+
+void PS2Memory::vif1ThreadMain()
+{
+    t_onVif1Thread = true;
+    ps2x::prof::markVif1Thread();
+    for (;;)
+    {
+        Vif1Job job;
+        {
+            std::unique_lock<std::mutex> lock(m_vif1Mutex);
+            m_vif1JobCv.wait(lock, [this] { return m_vif1Stop || !m_vif1Jobs.empty(); });
+            if (m_vif1Stop && m_vif1Jobs.empty())
+                return;
+            job = std::move(m_vif1Jobs.front());
+            m_vif1Jobs.pop_front();
+        }
+        Vif1Result result;
+        m_vif1Capture = &result;
+        m_vif1JobFbrst = job.fbrst;
+        processVIF1Data(job.data.data(), static_cast<uint32_t>(job.data.size()));
+        m_vif1Capture = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(m_vif1Mutex);
+            m_vif1Results.push_back(std::move(result));
+            --m_vif1InFlight;
+        }
+        m_vif1DoneCv.notify_all();
+    }
+}
+
+bool PS2Memory::vif1Capture(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool directHl)
+{
+    if (!t_onVif1Thread || !m_vif1Capture)
+        return false;
+    Vif1CaptureOp op;
+    op.kind = 0;
+    op.path = static_cast<uint8_t>(pathId);
+    op.drainImmediately = drainImmediately;
+    op.directHl = directHl;
+    op.offset = static_cast<uint32_t>(m_vif1Capture->bytes.size());
+    op.size = sizeBytes;
+    m_vif1Capture->bytes.insert(m_vif1Capture->bytes.end(), data, data + sizeBytes);
+    m_vif1Capture->ops.push_back(op);
+    return true;
+}
+
+bool PS2Memory::vif1CaptureMaskPath3(bool masked)
+{
+    if (!t_onVif1Thread || !m_vif1Capture)
+        return false;
+    Vif1CaptureOp op;
+    op.kind = 1;
+    op.size = masked ? 1u : 0u;
+    m_vif1Capture->ops.push_back(op);
+    return true;
+}
+
+void PS2Memory::replayVif1Result(const Vif1Result &result)
+{
+    for (const Vif1CaptureOp &op : result.ops)
+    {
+        if (op.kind == 1)
+        {
+            const bool wasMasked = m_path3Masked;
+            m_path3Masked = op.size != 0u;
+            if (wasMasked && !m_path3Masked)
+                flushMaskedPath3Packets();
+            continue;
+        }
+        queueGifPacket(static_cast<GifPathId>(op.path), result.bytes.data() + op.offset, op.size, op.drainImmediately,
+                       op.directHl);
+    }
+}
+
+void PS2Memory::syncVif1Thread()
+{
+    if (!m_vif1ThreadOn || t_onVif1Thread || m_vif1Replaying || !m_vif1Pending.load(std::memory_order_acquire))
+        return;
+    // Only the thread that hands work over replays it; the draw thread's GS calls never get here.
+    if (std::this_thread::get_id() != m_vif1OwnerThread)
+        return;
+    std::deque<Vif1Result> results;
+    {
+        std::unique_lock<std::mutex> lock(m_vif1Mutex);
+        m_vif1DoneCv.wait(lock, [this] { return m_vif1InFlight == 0u; });
+        results.swap(m_vif1Results);
+        m_vif1Pending.store(false, std::memory_order_release);
+    }
+    m_vif1Replaying = true;
+    for (const Vif1Result &result : results)
+        replayVif1Result(result);
+    m_vif1Replaying = false;
+}
+
+void PS2Memory::syncVif1IfTouched(uint32_t address)
+{
+    if (!m_vif1Pending.load(std::memory_order_relaxed))
+        return;
+    // GS privileged registers, VIF0/VIF1 registers, VU1 code and data.
+    const uint32_t phys = address & 0x1FFFFFFFu;
+    if ((phys >= 0x12000000u && phys < 0x12002000u) || (phys >= 0x10003800u && phys < 0x10004000u) ||
+        (phys >= 0x11008000u && phys < 0x11010000u))
+        syncVif1Thread();
 }

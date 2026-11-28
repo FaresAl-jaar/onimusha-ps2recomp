@@ -22,6 +22,8 @@ namespace ps2x::prof
     };
 
     extern std::atomic<uint64_t> g_ns[Count];
+    // Time on the VIF1 thread. Its index Ee holds the time outside any scope, i.e. waiting for work.
+    extern std::atomic<uint64_t> g_nsVif1[Count];
 
     // Event counters per second, printed in the [speed] line.
     enum Counter : int
@@ -33,6 +35,11 @@ namespace ps2x::prof
         TextureDecodes,
         Transfers,
         ImageChunks,
+        Vif1Kicks,    // VIF1 DMA transfers processed
+        GifKicks,     // GIF (PATH3) DMA transfers processed
+        VifIrqs,      // VIF codes with the interrupt bit
+        GsSignals,    // GS SIGNAL served by running the EE handler right away
+        GsFinish,     // GS FINISH
         CounterCount
     };
 
@@ -47,12 +54,22 @@ namespace ps2x::prof
     {
         int current = Ee;
         std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+        std::atomic<uint64_t> *sink = g_ns;
     };
 
     inline State &state()
     {
         thread_local State s;
         return s;
+    }
+
+    // The calling thread's time goes to g_nsVif1 from now on.
+    inline void markVif1Thread()
+    {
+        State &s = state();
+        s.sink = g_nsVif1;
+        s.current = Ee;
+        s.last = std::chrono::steady_clock::now();
     }
 
     struct Scope
@@ -62,8 +79,8 @@ namespace ps2x::prof
         {
             State &s = state();
             const auto now = std::chrono::steady_clock::now();
-            g_ns[s.current].fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - s.last).count()),
-                                      std::memory_order_relaxed);
+            s.sink[s.current].fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - s.last).count()),
+                                        std::memory_order_relaxed);
             s.last = now;
             previous = s.current;
             s.current = category;
@@ -72,8 +89,8 @@ namespace ps2x::prof
         {
             State &s = state();
             const auto now = std::chrono::steady_clock::now();
-            g_ns[s.current].fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - s.last).count()),
-                                      std::memory_order_relaxed);
+            s.sink[s.current].fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now - s.last).count()),
+                                        std::memory_order_relaxed);
             s.last = now;
             s.current = previous;
         }

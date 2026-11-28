@@ -24,6 +24,7 @@
 extern "C" void *glfwGetCurrentContext(void);
 extern std::atomic<uint64_t> g_ps2xVblankCount; // EeScheduler.cpp
 std::atomic<uint64_t> ps2x::prof::g_ns[ps2x::prof::Count] = {};
+std::atomic<uint64_t> ps2x::prof::g_nsVif1[ps2x::prof::Count] = {};
 std::atomic<uint64_t> ps2x::prof::g_count[ps2x::prof::CounterCount] = {};
 extern "C" void glfwGetFramebufferSize(void *window, int *width, int *height);
 #if defined(PS2X_HAVE_NATIVE_GS)
@@ -521,6 +522,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
 #include "ps2x/iop/spu2_output.h"
 
 extern void (*g_ps2xGsSignalHook)();
+extern void (*g_ps2xGsAccessHook)();
 void ps2xRefreshActiveDmaChains();
 namespace
 {
@@ -568,9 +570,27 @@ namespace
                         s_lastNs[i] = ns;
                     }
                     std::fprintf(stderr, "\n");
+                    {
+                        static uint64_t s_lastVif1[ps2x::prof::Count] = {};
+                        uint64_t busy = 0, total = 0;
+                        double ms[ps2x::prof::Count] = {};
+                        for (int i = 0; i < ps2x::prof::Count; ++i)
+                        {
+                            const uint64_t v = ps2x::prof::g_nsVif1[i].load(std::memory_order_relaxed);
+                            const uint64_t d = v - s_lastVif1[i];
+                            s_lastVif1[i] = v;
+                            total += d;
+                            if (i != ps2x::prof::Ee)
+                                busy += d;
+                            ms[i] = static_cast<double>(d) / 1.0e6 / seconds;
+                        }
+                        if (total != 0u)
+                            std::fprintf(stderr, "[speed] VIF1 thread ms per second: busy %.0f (VU1 %.0f VIF %.0f)\n",
+                                         static_cast<double>(busy) / 1.0e6 / seconds, ms[ps2x::prof::Vu1], ms[ps2x::prof::Vif]);
+                    }
                     static uint64_t s_lastCount[ps2x::prof::CounterCount] = {};
                     static const char *const kCounterNames[ps2x::prof::CounterCount] = {
-                        "readbacks", "readback KiB", "upload KiB", "batches", "texture decodes", "transfers", "image chunks"};
+                        "readbacks", "readback KiB", "upload KiB", "batches", "texture decodes", "transfers", "image chunks", "VIF1 kicks", "GIF kicks", "VIF irqs", "GS signals served", "GS finish"};
                     std::fprintf(stderr, "[speed] GS per second:");
                     for (int i = 0; i < ps2x::prof::CounterCount; ++i)
                     {
@@ -739,6 +759,7 @@ PS2Runtime::~PS2Runtime()
     {
         s_signalRuntime = nullptr;
         g_ps2xGsSignalHook = nullptr;
+        g_ps2xGsAccessHook = nullptr;
     }
     try
     {
@@ -894,14 +915,17 @@ bool PS2Runtime::syncCoreSubsystems()
                                      {
                                          cpuContext = &m_cpuContext;
                                      }
-                                     m_vu1.state().dBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
-                                     m_vu1.state().tBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     // On the VIF1 thread: FBRST as it was when the transfer started, and
+                                     // VPU_STAT stays with the game thread (D/T stops are not reported there).
+                                     const bool onVif1 = PS2Memory::onVif1Thread();
+                                     const uint32_t fbrst = onVif1 ? m_memory.vif1JobFbrst() : cpuContext->vu0_fbrst;
+                                     m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
+                                     m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
                                      g_ps2xGfxCounters[0].fetch_add(1, std::memory_order_relaxed);
                                      m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                    m_gs, &m_memory, startPC, top, itop, kVu1ProgramCycleCap);
+                                     if (!onVif1)
                                      cpuContext->vu0_vpu_stat =
                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
@@ -913,17 +937,25 @@ bool PS2Runtime::syncCoreSubsystems()
                                      {
                                          cpuContext = &m_cpuContext;
                                      }
-                                     m_vu1.state().dBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
-                                     m_vu1.state().tBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     // On the VIF1 thread: FBRST as it was when the transfer started, and
+                                     // VPU_STAT stays with the game thread (D/T stops are not reported there).
+                                     const bool onVif1 = PS2Memory::onVif1Thread();
+                                     const uint32_t fbrst = onVif1 ? m_memory.vif1JobFbrst() : cpuContext->vu0_fbrst;
+                                     m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
+                                     m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
                                      m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                   m_gs, &m_memory, top, itop, kVu1ProgramCycleCap);
+                                     if (!onVif1)
                                      cpuContext->vu0_vpu_stat =
                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
                                          (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
+    m_memory.setVif1FbrstSource([this]() -> uint32_t
+                                {
+                                    R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+                                    return (cpuContext ? cpuContext : &m_cpuContext)->vu0_fbrst; });
+    g_ps2xGsAccessHook = [] { if (s_signalRuntime) s_signalRuntime->memory().syncVif1Thread(); };
     resetIop();
     m_vu0.reset();
     m_vu1.reset();

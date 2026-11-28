@@ -19,6 +19,9 @@ extern std::atomic<uint64_t> g_ps2xGfxCounters[8];
 #include <iostream>
 #include <sstream>
 
+// Set by the runtime: hands the VIF1 thread's GS work over before any other GS access, so the GS keeps
+// seeing everything in the original order.
+void (*g_ps2xGsAccessHook)() = nullptr;
 // Set by the runtime: serves the GS interrupt for a SIGNAL right away.
 void (*g_ps2xGsSignalHook)() = nullptr;
 
@@ -209,6 +212,8 @@ GSContext &GS::activeContext()
 
 void GS::snapshotVRAM()
 {
+    if (g_ps2xGsAccessHook)
+        g_ps2xGsAccessHook();
     // Presentation/debug snapshots run outside m_stateMutex so the EE can keep
     // feeding the GS while a backend performs host-side conversion. Keep the
     // selected backend alive and unswappable for the duration of the call.
@@ -512,6 +517,8 @@ uint32_t GS::getLastDisplayBaseBytes() const
 
 void GS::refreshDisplaySnapshot()
 {
+    if (g_ps2xGsAccessHook)
+        g_ps2xGsAccessHook();
     snapshotVRAM();
 }
 
@@ -538,6 +545,8 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
 
 void GS::latchHostPresentationFrame()
 {
+    if (g_ps2xGsAccessHook)
+        g_ps2xGsAccessHook();
     // A GPU renderer presents on the game thread (presentOnDrawThread); the window only reads what it stored.
     {
         std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
@@ -549,6 +558,8 @@ void GS::latchHostPresentationFrame()
 
 void GS::presentOnDrawThread()
 {
+    if (g_ps2xGsAccessHook)
+        g_ps2xGsAccessHook();
     ps2x::prof::Scope profScope(ps2x::prof::Present);
     {
         std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
@@ -757,6 +768,8 @@ static void ps2xGifDump(const uint8_t *data, uint32_t sizeBytes)
 
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
+    if (g_ps2xGsAccessHook)
+        g_ps2xGsAccessHook();
     ps2x::prof::Scope profScope(ps2x::prof::Gs);
     g_ps2xGfxCounters[2].fetch_add(1, std::memory_order_relaxed);
     if (data && sizeBytes >= 16u)
@@ -862,6 +875,8 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 
 bool GS::processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes)
 {
+    if (g_ps2xGsAccessHook)
+        g_ps2xGsAccessHook();
     ps2x::prof::Scope profScope(ps2x::prof::Gs);
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (!data || sizeBytes < 16u || !m_backend)
@@ -1194,6 +1209,8 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
 
 void GS::writeRegister(uint8_t regAddr, uint64_t value)
 {
+    if (g_ps2xGsAccessHook)
+        g_ps2xGsAccessHook();
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     writeRegisterUnlocked(regAddr, value);
 }
@@ -1647,12 +1664,16 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
             m_privRegs->csr.fetch_or(0x1);
             // The GS stalls on SIGNAL until the CPU has served the interrupt (IMR.SIGMSK clear).
             if ((m_privRegs->imr & 0x100u) == 0u && g_ps2xGsSignalHook)
+            {
+                ps2x::prof::count(ps2x::prof::GsSignals);
                 g_ps2xGsSignalHook();
+            }
         }
         break;
     }
     case GS_REG_FINISH:
     {
+        ps2x::prof::count(ps2x::prof::GsFinish);
         if (m_backend)
         {
             m_backend->Flush();
@@ -1802,18 +1823,24 @@ void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
 
 bool GS::clearFramebufferContext(uint32_t contextIndex, uint32_t rgba)
 {
+    if (g_ps2xGsAccessHook)
+        g_ps2xGsAccessHook();
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     return m_backend && m_backend->ClearFramebuffer(m_ctx[(contextIndex != 0u) ? 1 : 0], rgba);
 }
 
 bool GS::clearActiveFramebuffer(uint32_t rgba)
 {
+    if (g_ps2xGsAccessHook)
+        g_ps2xGsAccessHook();
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     return m_backend && m_backend->ClearFramebuffer(activeContext(), rgba);
 }
 
 uint32_t GS::consumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
 {
+    if (g_ps2xGsAccessHook)
+        g_ps2xGsAccessHook();
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     return m_backend ? m_backend->ConsumeLocalToHostBytes(dst, maxBytes) : 0u;
 }
@@ -1855,6 +1882,8 @@ uint32_t GS::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint
 
 void GS::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
 {
+    if (g_ps2xGsAccessHook)
+        g_ps2xGsAccessHook();
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (m_backend)
         m_backend->WriteVram(psm, base, bw, x, y, value);

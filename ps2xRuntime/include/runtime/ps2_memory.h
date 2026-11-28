@@ -11,6 +11,9 @@
 #include <atomic>
 #include <iostream>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 
 #include "gs/ps2_gif_arbiter.h"
 #if defined(_MSC_VER)
@@ -417,6 +420,20 @@ public:
     void processPendingTransfers();
     std::vector<uint32_t> consumeCompletedDmacCauses();
 
+    // VIF1 thread (PS2X_VIF1_THREAD=1). VIF1 DMA data is copied when the game starts the transfer, so VIF
+    // and VU1 can work through it on their own thread while the game thread runs on. That thread never
+    // touches the GS: the GIF packets VU1 (PATH1) and VIF DIRECT (PATH2) send, and MSKPATH3, are recorded in
+    // order and the game thread hands them to the GS before any other GS, VIF or VU1 access of its own and
+    // at VBlank (syncVif1Thread), so the GS sees exactly the order it saw before.
+    void startVif1Thread();
+    void stopVif1Thread();
+    void syncVif1Thread();
+    bool vif1ThreadOn() const { return m_vif1ThreadOn; }
+    static bool onVif1Thread();
+    // EE state the VU1 callbacks read, as it was when the transfer started (the thread cannot read the EE).
+    uint32_t vif1JobFbrst() const { return m_vif1JobFbrst; }
+    void setVif1FbrstSource(std::function<uint32_t()> source) { m_vif1FbrstSource = std::move(source); }
+
     int pollDmaRegisters();
 
     // Track code modifications for self-modifying code
@@ -503,6 +520,46 @@ public:
     std::vector<PendingTransfer> m_pendingGifTransfers;
     std::vector<PendingTransfer> m_pendingVif0Transfers;
     std::vector<PendingTransfer> m_pendingVif1Transfers;
+
+    struct Vif1CaptureOp
+    {
+        uint8_t kind = 0; // 0: GIF packet, 1: MSKPATH3
+        uint8_t path = 0;
+        bool drainImmediately = true;
+        bool directHl = false;
+        uint32_t offset = 0;
+        uint32_t size = 0;
+    };
+    struct Vif1Result
+    {
+        std::vector<uint8_t> bytes;
+        std::vector<Vif1CaptureOp> ops;
+    };
+    struct Vif1Job
+    {
+        std::vector<uint8_t> data;
+        uint32_t fbrst = 0;
+    };
+    void vif1ThreadMain();
+    void replayVif1Result(const Vif1Result &result);
+    bool vif1Capture(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool directHl);
+    bool vif1CaptureMaskPath3(bool masked);
+    void syncVif1IfTouched(uint32_t address);
+    std::thread m_vif1Thread;
+    std::mutex m_vif1Mutex;
+    std::condition_variable m_vif1JobCv;
+    std::condition_variable m_vif1DoneCv;
+    std::deque<Vif1Job> m_vif1Jobs;
+    std::deque<Vif1Result> m_vif1Results;
+    uint32_t m_vif1InFlight = 0;
+    bool m_vif1Stop = false;
+    bool m_vif1ThreadOn = false;
+    bool m_vif1Replaying = false;
+    std::atomic<bool> m_vif1Pending{false};
+    std::thread::id m_vif1OwnerThread;
+    Vif1Result *m_vif1Capture = nullptr;
+    uint32_t m_vif1JobFbrst = 0;
+    std::function<uint32_t()> m_vif1FbrstSource;
     std::mutex m_completedDmacMutex;
     std::vector<uint32_t> m_completedDmacCauses;
 

@@ -383,6 +383,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         if (irq)
         {
             vif1_regs.stat |= (1u << 11); // INT
+            ps2x::prof::count(ps2x::prof::VifIrqs);
             if (static const bool s_irqLog = std::getenv("PS2X_VIF_IRQ_LOG") != nullptr; s_irqLog)
             {
                 static uint64_t s_irqs = 0;
@@ -429,10 +430,14 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         else if (opcode == VIF_MSKPATH3)
         {
             // VIF command docs: MSKPATH3 uses IMMEDIATE bit 15.
-            const bool wasMasked = m_path3Masked;
-            m_path3Masked = (imm & 0x8000u) != 0u;
-            if (wasMasked && !m_path3Masked)
-                flushMaskedPath3Packets();
+            // On the VIF1 thread the mask is recorded and applied in order when the GS work is handed over.
+            if (!vif1CaptureMaskPath3((imm & 0x8000u) != 0u))
+            {
+                const bool wasMasked = m_path3Masked;
+                m_path3Masked = (imm & 0x8000u) != 0u;
+                if (wasMasked && !m_path3Masked)
+                    flushMaskedPath3Packets();
+            }
             continue;
         }
         else if (opcode == VIF_MARK)
