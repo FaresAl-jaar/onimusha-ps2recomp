@@ -47,6 +47,14 @@ namespace ps2x::iop::detail
         cpu.cop0[13] = cause;
         if (badAddress)
             cpu.cop0[8] = *badAddress;
+        {
+            // An IOP program that faults lands on the exception vector, where no handler is installed: say where.
+            static int s_logged = 0;
+            if (s_logged++ < 20)
+                std::fprintf(stderr, "[iop:exception] code %u at pc %08x%s bad address %08x ra %08x sp %08x v0 %08x v1 %08x a0 %08x a1 %08x s1 %08x\n",
+                             code, faultPc, delaySlot ? " (delay slot)" : "", badAddress ? *badAddress : 0u, cpu.gpr[31],
+                             cpu.gpr[29], cpu.gpr[2], cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[17]);
+        }
         const uint32_t status = cpu.cop0[12];
         cpu.cop0[12] = (status & ~0x3Fu) | ((status << 2u) & 0x3Fu);
         cpu.pc = (status & (1u << 22u)) ? 0xBFC00180u : 0x80000080u;

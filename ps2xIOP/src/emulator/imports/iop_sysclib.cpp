@@ -341,13 +341,15 @@ namespace ps2x::iop::detail
         case 37: // atob
             setV0(0);
             return true;
-        case 40: // _wmemcopy, count is 32-bit words
-            for (uint32_t i = 0; i < a2; ++i)
+        case 40: // wmemcopy(dest, src, size): size is in bytes, copied a 32-bit word at a time
+            // (SNDDRV checks size & 3 before it calls this; reading it as a word count copied four times as much
+            // and overwrote the driver's own state, which then faulted and spun in the exception vector).
+            for (uint32_t i = 0; i < a2 / 4u; ++i)
                 m_memory.write32(a0 + i * 4u, m_memory.read32(a1 + i * 4u));
             setV0(a0);
             return true;
-        case 41:
-            for (uint32_t i = 0; i < a2; ++i)
+        case 41: // wmemset(dest, value, size): size is in bytes
+            for (uint32_t i = 0; i < a2 / 4u; ++i)
                 m_memory.write32(a0 + i * 4u, a1);
             setV0(a0);
             return true;

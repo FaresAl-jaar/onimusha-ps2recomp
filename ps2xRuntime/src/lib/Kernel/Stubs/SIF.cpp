@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cstdio>
 #include "Common.h"
 #include "SIF.h"
 #include "../Syscalls/RPC.h"
@@ -699,11 +701,28 @@ namespace ps2_stubs
             pending[pendingCount++] = xfer;
         }
 
+        // PS2X_SIF_WATCH=<IOP address>: log every transfer whose destination covers that address.
+        static const uint32_t s_watch = [] { const char *v = std::getenv("PS2X_SIF_WATCH"); return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 16)) : 0u; }();
         if (ok)
         {
             for (uint32_t i = 0; i < pendingCount; ++i)
             {
                 const Ps2SifDmaTransfer &xfer = pending[i];
+                if (s_watch != 0u && s_watch >= (xfer.dest & 0x1FFFFFu) && s_watch < (xfer.dest & 0x1FFFFFu) + static_cast<uint32_t>(xfer.size))
+                    std::fprintf(stderr, "[sif:watch] SetDma src=%08x dst=%08x size=%x attr=%x ra=%08x\n", xfer.src, xfer.dest,
+                                 static_cast<uint32_t>(xfer.size), xfer.attr, getRegU32(ctx, 31));
+                if (s_watch != 0u && s_watch >= (xfer.dest & 0x1FFFFFu) && s_watch < (xfer.dest & 0x1FFFFFu) + static_cast<uint32_t>(xfer.size))
+                    if (const uint8_t *src = getConstMemPtr(rdram, xfer.src))
+                    {
+                        std::fprintf(stderr, "[sif:watch] first 64 bytes:");
+                        for (uint32_t b = 0; b < 64u && b < static_cast<uint32_t>(xfer.size); b += 4u)
+                        {
+                            uint32_t w;
+                            std::memcpy(&w, src + b, 4);
+                            std::fprintf(stderr, " %08x", w);
+                        }
+                        std::fprintf(stderr, "\n");
+                    }
                 if (runtime)
                 {
                     PS2IopTransport::notifyTransfer(runtime, rdram, {
@@ -739,6 +758,8 @@ namespace ps2_stubs
             static uint32_t warnCount = 0;
             if (warnCount < 32u)
             {
+                // Always reported: a refused list never reaches the IOP and the game is not told.
+                std::fprintf(stderr, "[sif] sceSifSetDma refused list=%08x count=%u ra=%08x\n", dmatAddr, count, getRegU32(ctx, 31));
                 PS2_IF_AGRESSIVE_LOGS({
                     std::cerr << "sceSifSetDma failed dmat=0x" << std::hex << dmatAddr
                               << " count=0x" << count

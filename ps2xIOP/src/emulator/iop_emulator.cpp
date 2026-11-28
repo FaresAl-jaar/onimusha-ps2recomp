@@ -656,6 +656,58 @@ namespace ps2x::iop::detail
             servicingGuestCallbacks = false;
         }
 
+        // PS2X_IOP_PROF=1: every 10 s of IOP time, the cycles each thread ran and the hottest 256-byte code
+        // regions at the end of its slices (where a thread spins, it ends there).
+        void profileSlice(const IopThread &thread, uint64_t cycles)
+        {
+            static const bool on = std::getenv("PS2X_IOP_PROF") != nullptr;
+            if (!on)
+                return;
+            static std::map<uint32_t, uint64_t> s_threadCycles;
+            static std::map<uint32_t, uint64_t> s_pcHits;
+            static uint64_t s_nextReport = 368640000ull;
+            s_threadCycles[(static_cast<uint32_t>(thread.id) << 24) | (thread.entry & 0xFFFFFFu)] += cycles;
+            if ((thread.cpu.pc & 0x80000000u) != 0u)
+            {
+                static int s_logged = 0;
+                if (s_logged++ < 3)
+                {
+                    std::fprintf(stderr, "[iop:prof] thread %d (entry %06x) runs at pc %08x ra %08x sp %08x, words:", thread.id,
+                                 thread.entry, thread.cpu.pc, thread.cpu.gpr[31], thread.cpu.gpr[29]);
+                    for (uint32_t i = 0; i < 8u; ++i)
+                        std::fprintf(stderr, " %08x", memory.read32((thread.cpu.pc & 0x1FFFFFFFu) + i * 4u));
+                    std::fprintf(stderr, "\n");
+                }
+            }
+            static const uint32_t s_focus = [] { const char *v = std::getenv("PS2X_IOP_PROF"); return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 16)) : 0u; }();
+            if (s_focus <= 1u || (thread.entry & 0xFFFFFFu) == s_focus)
+                s_pcHits[thread.cpu.pc & (s_focus > 1u ? ~0x3u : ~0xFFu)] += cycles;
+            if (totalCycles < s_nextReport)
+                return;
+            s_nextReport = totalCycles + 368640000ull;
+            std::vector<std::pair<uint64_t, uint32_t>> threads, pcs;
+            for (const auto &[key, c] : s_threadCycles)
+                threads.push_back({c, key});
+            for (const auto &[pc, n] : s_pcHits)
+                pcs.push_back({n, pc});
+            std::sort(threads.rbegin(), threads.rend());
+            std::sort(pcs.rbegin(), pcs.rend());
+            std::fprintf(stderr, "[iop:prof] threads (id entry: share of IOP cycles):");
+            uint64_t total = 0;
+            for (const auto &t : threads)
+                total += t.first;
+            for (size_t i = 0; i < threads.size() && i < 8u; ++i)
+                std::fprintf(stderr, " %u@%06x:%.1f%%", threads[i].second >> 24, threads[i].second & 0xFFFFFFu,
+                             100.0 * static_cast<double>(threads[i].first) / static_cast<double>(std::max<uint64_t>(total, 1u)));
+            std::fprintf(stderr, " | idle %.1f%%\n", 100.0 - 100.0 * static_cast<double>(total) / 368640000.0);
+            std::fprintf(stderr, "[iop:prof] slice ends:");
+            for (size_t i = 0; i < pcs.size() && i < 10u; ++i)
+                std::fprintf(stderr, " %06x:%llu", pcs[i].second, static_cast<unsigned long long>(pcs[i].first));
+            std::fprintf(stderr, "\n");
+            s_threadCycles.clear();
+            s_pcHits.clear();
+        }
+
         void runCycles(uint64_t cycles) noexcept
         {
             try
@@ -689,6 +741,7 @@ namespace ps2x::iop::detail
                                              !next->cpu.stopped && !next->cpu.yielded && next->cpu.pc != kThreadReturnSentinel;
                          ++extra)
                         runCpu(next->cpu, kDefaultSlice);
+                    profileSlice(*next, totalCycles - before);
                     kernel.endTimeslice(*next, kThreadReturnSentinel);
                     if (totalCycles == before)
                         ++totalCycles;
