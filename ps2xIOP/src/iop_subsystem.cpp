@@ -99,6 +99,7 @@ namespace ps2x::iop
 
     void IopSubsystem::reset()
     {
+        m_eeCycleCarry = 0;
         m_impl->moduleManager.reset();
         m_impl->loadOutcomes.clear();
         m_impl->loggedLoadPaths.clear();
@@ -166,7 +167,13 @@ namespace ps2x::iop
 
     void IopSubsystem::runEeCycles(uint64_t eeCycles) noexcept
     {
-        m_impl->emulator.runEeCycles(eeCycles);
+        if (const uint64_t cycles = takeDueIopCycles(eeCycles))
+            runIopCycles(cycles);
+    }
+
+    void IopSubsystem::runIopCycles(uint64_t cycles) noexcept
+    {
+        m_impl->emulator.runIopCycles(cycles);
     }
 
     RpcAbi IopSubsystem::selectRpcAbi(const RpcAbiRequest &request) const

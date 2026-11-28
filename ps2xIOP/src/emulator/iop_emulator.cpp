@@ -171,7 +171,6 @@ namespace ps2x::iop::detail
             moduleCursor = kModuleLoadBase;
             totalCycles = 0;
             totalInstructions = 0;
-            eeCycleCarry = 0;
             activeCpu = nullptr;
             lastError.clear();
             servicingDmaInterrupts = false;
@@ -853,7 +852,6 @@ namespace ps2x::iop::detail
         uint32_t moduleCursor = kModuleLoadBase;
         uint64_t totalCycles = 0;
         uint64_t totalInstructions = 0;
-        uint64_t eeCycleCarry = 0;
         CpuState *activeCpu = nullptr;
         std::string lastError;
         bool servicingDmaInterrupts = false;
@@ -891,20 +889,9 @@ namespace ps2x::iop::detail
         return m_impl->stopModule(moduleId, result);
     }
 
-    void IopEmulator::runEeCycles(uint64_t eeCycles) noexcept
+    void IopEmulator::runIopCycles(uint64_t cycles) noexcept
     {
-        // The EE accounts cycles in small steps; running the IOP scheduler for each of them cost a quarter
-        // of the EE thread. Batch at least kIopBatchCycles IOP cycles (about 7 microseconds of IOP time).
-        constexpr uint64_t kIopBatchCycles = 256u;
-        const uint64_t total = m_impl->eeCycleCarry + eeCycles;
-        if (total < kIopBatchCycles * 8u)
-        {
-            m_impl->eeCycleCarry = total;
-            return;
-        }
-        const uint64_t iopCycles = total / 8u;
-        m_impl->eeCycleCarry = total % 8u;
-        m_impl->runCycles(iopCycles);
+        m_impl->runCycles(cycles);
     }
 
     RpcResult IopEmulator::handleRpc(const RpcRequest &request)

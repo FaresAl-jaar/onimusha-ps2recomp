@@ -799,8 +799,11 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
 
 void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
 {
-    ps2x::prof::Scope profScope(ps2x::prof::Iop);
-    m_iopSubsystem->runEeCycles(eeCycles);
+    if (const uint64_t cycles = m_iopSubsystem->takeDueIopCycles(eeCycles))
+    {
+        ps2x::prof::Scope profScope(ps2x::prof::Iop);
+        m_iopSubsystem->runIopCycles(cycles);
+    }
 }
 
 void PS2Runtime::resetIop()

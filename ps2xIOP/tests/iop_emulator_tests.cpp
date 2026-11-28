@@ -896,6 +896,18 @@ int main()
     TestHost host(0x20000u);
     IopSubsystem iop(host);
 
+    iop.runEeCycles(2047u);
+    if (!expect(iop.debugSnapshot().emulatorCycles == 0u, "Partial IOP batch ran early")) return 1;
+    iop.runEeCycles(10u);
+    if (!expect(iop.debugSnapshot().emulatorCycles == 257u, "IOP batch lost whole cycles")) return 1;
+    iop.runEeCycles(2047u);
+    if (!expect(iop.debugSnapshot().emulatorCycles == 513u, "IOP batch lost the fractional carry")) return 1;
+    iop.runEeCycles(2000u);
+    iop.reset();
+    iop.runEeCycles(48u);
+    if (!expect(iop.debugSnapshot().emulatorCycles == 0u, "Reset retained a partial IOP batch")) return 1;
+    iop.reset();
+
     writeMinimalIrx(host, 0x100u);
     const ModuleLoadResult result = iop.loadModuleBuffer(0x100u);
     const DebugSnapshot snapshot = iop.debugSnapshot();

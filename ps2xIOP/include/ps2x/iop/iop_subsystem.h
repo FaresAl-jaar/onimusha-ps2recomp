@@ -28,6 +28,22 @@ namespace ps2x::iop
         [[nodiscard]] bool stopModule(int32_t moduleId, int32_t *result = nullptr);
         void runEeCycles(uint64_t eeCycles) noexcept;
 
+        // The runtime can time the actual IOP execution separately from the small EE checkpoints.
+        [[nodiscard]] uint64_t takeDueIopCycles(uint64_t eeCycles) noexcept
+        {
+            constexpr uint64_t eeCyclesPerIopCycle = 8;
+            constexpr uint64_t minimumBatch = 256;
+            const uint64_t total = m_eeCycleCarry + eeCycles;
+            if (total < minimumBatch * eeCyclesPerIopCycle)
+            {
+                m_eeCycleCarry = total;
+                return 0;
+            }
+            m_eeCycleCarry = total % eeCyclesPerIopCycle;
+            return total / eeCyclesPerIopCycle;
+        }
+        void runIopCycles(uint64_t cycles) noexcept;
+
         [[nodiscard]] RpcAbi selectRpcAbi(const RpcAbiRequest &request) const;
         [[nodiscard]] bool canBindRpc(uint32_t sid) const noexcept;
         [[nodiscard]] RpcResult handleRpc(const RpcRequest &request);
@@ -44,6 +60,7 @@ namespace ps2x::iop
         [[nodiscard]] DebugSnapshot debugSnapshot() const;
 
     private:
+        uint64_t m_eeCycleCarry = 0;
         class Impl;
         std::unique_ptr<Impl> m_impl;
     };

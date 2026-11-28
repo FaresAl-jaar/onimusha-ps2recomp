@@ -1036,7 +1036,6 @@ void VU1Interpreter::progressXgkick()
     ++m_xgkick.cycleCredit;
     while (m_xgkick.active && m_xgkick.cycleCredit >= 2u)
     {
-        m_xgkick.cycleCredit -= 2u;
         if (m_xgkick.copiedBytes > XgkickPipeline::kBufferSize - 16u)
         {
             reportReservedInstruction(false, 0xFFFFFFFBu);
@@ -1045,20 +1044,28 @@ void VU1Interpreter::progressXgkick()
         }
 
         const uint32_t qwordOffset = m_xgkick.copiedBytes;
-        const uint32_t firstSource = (m_xgkick.sourceAddress + m_xgkick.copiedBytes) % m_activeVuDataSize;
-        if (firstSource + 16u <= m_activeVuDataSize)
+        const uint32_t firstSource = (m_xgkick.sourceAddress + qwordOffset) % m_activeVuDataSize;
+        const uint32_t contiguous = m_activeVuDataSize - firstSource;
+        uint32_t bytes = 16u;
+        if (m_xgkick.currentTagEnd != 0u && m_xgkick.cycleCredit >= 4u && contiguous >= 32u)
         {
-            std::memcpy(m_xgkick.packet.data() + m_xgkick.copiedBytes, m_activeVuData + firstSource, 16u);
+            // Draining an already-issued kick can transfer a whole payload. Stay inside the
+            // validated tag and VU ring, and consume only qwords earned by this call.
+            const uint32_t available = std::min(contiguous, m_xgkick.currentTagEnd - qwordOffset);
+            bytes = 16u * std::min(available / 16u, m_xgkick.cycleCredit / 2u);
+            std::memcpy(m_xgkick.packet.data() + qwordOffset, m_activeVuData + firstSource, bytes);
+        }
+        else if (contiguous >= 16u)
+        {
+            std::memcpy(m_xgkick.packet.data() + qwordOffset, m_activeVuData + firstSource, 16u);
         }
         else
         {
-            for (uint32_t i = 0; i < 16u; ++i)
-            {
-                const uint32_t source = (m_xgkick.sourceAddress + m_xgkick.copiedBytes + i) % m_activeVuDataSize;
-                m_xgkick.packet[m_xgkick.copiedBytes + i] = m_activeVuData[source];
-            }
+            std::memcpy(m_xgkick.packet.data() + qwordOffset, m_activeVuData + firstSource, contiguous);
+            std::memcpy(m_xgkick.packet.data() + qwordOffset + contiguous, m_activeVuData, 16u - contiguous);
         }
-        m_xgkick.copiedBytes += 16u;
+        m_xgkick.copiedBytes += bytes;
+        m_xgkick.cycleCredit -= 2u * (bytes / 16u);
 
         if (m_xgkick.currentTagEnd == 0u)
         {
