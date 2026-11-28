@@ -12,6 +12,7 @@
 #include <limits>
 #include <stdexcept>
 
+void ps2xSpeedReport();
 std::atomic<uint64_t> g_ps2xVblankCount{0};
 
 namespace
@@ -1973,6 +1974,10 @@ void EeScheduler::processEvent(const EeEvent &event)
         m_runtime.gs().presentOnDrawThread();
         {
             const uint64_t vb = g_ps2xVblankCount.fetch_add(1, std::memory_order_relaxed) + 1u;
+            // Without an audio device nothing else writes the [speed] lines (PS2X_SPEED_VBLANK=1).
+            static const bool s_speedFromVblank = std::getenv("PS2X_SPEED_VBLANK") != nullptr;
+            if (s_speedFromVblank)
+                ps2xSpeedReport();
             // PS2X_RAM_DUMP=<n>: write EE RAM to /tmp/eeram_<vblank>.bin every n VBlanks.
             static const uint64_t s_ramDump = []() -> uint64_t {
                 const char *e = std::getenv("PS2X_RAM_DUMP");

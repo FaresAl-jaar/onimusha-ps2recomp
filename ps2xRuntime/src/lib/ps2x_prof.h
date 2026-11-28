@@ -14,10 +14,31 @@ namespace ps2x::prof
         Iop,
         Present,
         Vif,
+        GsDraw,   // GPU renderer: building and submitting draw batches
+        GsRead,   // GPU renderer: reading GS memory back from the GPU
+        GsUpload, // GPU renderer: uploading changed GS memory and decoded textures
         Count
     };
 
     extern std::atomic<uint64_t> g_ns[Count];
+
+    // Event counters per second, printed in the [speed] line.
+    enum Counter : int
+    {
+        Readbacks = 0,
+        ReadbackKiB,
+        UploadKiB,
+        Batches,
+        TextureDecodes,
+        CounterCount
+    };
+
+    extern std::atomic<uint64_t> g_count[CounterCount];
+
+    inline void count(int counter, uint64_t value = 1)
+    {
+        g_count[counter].fetch_add(value, std::memory_order_relaxed);
+    }
 
     struct State
     {

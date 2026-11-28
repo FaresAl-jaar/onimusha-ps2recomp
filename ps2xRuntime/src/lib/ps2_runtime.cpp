@@ -1,3 +1,4 @@
+#include <mutex>
 #include <cstdio>
 #include "ps2x_prof.h"
 #include <vector>
@@ -23,6 +24,7 @@
 extern "C" void *glfwGetCurrentContext(void);
 extern std::atomic<uint64_t> g_ps2xVblankCount; // EeScheduler.cpp
 std::atomic<uint64_t> ps2x::prof::g_ns[ps2x::prof::Count] = {};
+std::atomic<uint64_t> ps2x::prof::g_count[ps2x::prof::CounterCount] = {};
 extern "C" void glfwGetFramebufferSize(void *window, int *width, int *height);
 #if defined(PS2X_HAVE_NATIVE_GS)
 #include "runtime/gs/gs_native_backend.h"
@@ -535,9 +537,14 @@ namespace
     // stretched to the request instead of inserting silence (no clicks), and a backlog beyond 200 ms is dropped.
     std::atomic<uint64_t> s_audioDrops{0}, s_audioStretches{0}, s_audioDry{0};
 
-    void spuStreamCallback(void *buffer, unsigned int frameCount)
+    // Every 10 s the log gets the game's speed (VBlanks per second, 60 = full speed), the audio health and where the
+    // game thread's time went. Called from the audio callback and, for runs without an audio device, every VBlank.
+    void ps2xSpeedReportImpl()
     {
-        // Every 10 s the log gets the game's speed (VBlanks per second, 60 = full speed) and the audio health.
+        static std::mutex s_mutex;
+        std::unique_lock<std::mutex> lock(s_mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            return;
         {
             static auto s_last = std::chrono::steady_clock::now();
             static uint64_t s_lastVblanks = 0;
@@ -552,7 +559,7 @@ namespace
                              static_cast<unsigned long long>(s_audioDry.exchange(0)), ps2x::iop::spu2BufferedFrames());
                 {
                     static uint64_t s_lastNs[ps2x::prof::Count] = {};
-                    static const char *const kNames[ps2x::prof::Count] = {"game code", "VU1", "GS", "IOP", "present", "VIF"};
+                    static const char *const kNames[ps2x::prof::Count] = {"game code", "VU1", "GS", "IOP", "present", "VIF", "GS draw", "GS read", "GS upload"};
                     std::fprintf(stderr, "[speed] game thread ms per second:");
                     for (int i = 0; i < ps2x::prof::Count; ++i)
                     {
@@ -561,11 +568,27 @@ namespace
                         s_lastNs[i] = ns;
                     }
                     std::fprintf(stderr, "\n");
+                    static uint64_t s_lastCount[ps2x::prof::CounterCount] = {};
+                    static const char *const kCounterNames[ps2x::prof::CounterCount] = {
+                        "readbacks", "readback KiB", "upload KiB", "batches", "texture decodes"};
+                    std::fprintf(stderr, "[speed] GS per second:");
+                    for (int i = 0; i < ps2x::prof::CounterCount; ++i)
+                    {
+                        const uint64_t v = ps2x::prof::g_count[i].load(std::memory_order_relaxed);
+                        std::fprintf(stderr, " %s %.0f", kCounterNames[i], static_cast<double>(v - s_lastCount[i]) / seconds);
+                        s_lastCount[i] = v;
+                    }
+                    std::fprintf(stderr, "\n");
                 }
                 s_last = now;
                 s_lastVblanks = vblanks;
             }
         }
+    }
+
+    void spuStreamCallback(void *buffer, unsigned int frameCount)
+    {
+        ps2xSpeedReportImpl();
         auto *out = static_cast<int16_t *>(buffer);
         static std::vector<int16_t> scratch;
         static bool primed = false;
@@ -3027,3 +3050,14 @@ std::string ps2xFormatDispatchHistory()
 // PS2_PMFHL_* in ps2_runtime_macros.h reach hi1/lo1 through the address of hi/lo.
 static_assert(offsetof(R5900Context, hi1) == offsetof(R5900Context, hi) + 2 * sizeof(uint64_t), "hi1 must follow lo");
 static_assert(offsetof(R5900Context, lo1) == offsetof(R5900Context, lo) + 2 * sizeof(uint64_t), "lo1 must follow hi1");
+
+#if !defined(PLATFORM_VITA)
+void ps2xSpeedReport()
+{
+    ps2xSpeedReportImpl();
+}
+#else
+void ps2xSpeedReport()
+{
+}
+#endif

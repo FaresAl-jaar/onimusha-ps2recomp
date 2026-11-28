@@ -9,6 +9,7 @@
 // raylib's OpenGL 3.3 loader: its function pointers are loaded by raylib for the window context and stay valid on a
 // context that shares with it.
 #include "external/glad.h"
+#include "../ps2x_prof.h"
 #define GLFW_INCLUDE_NONE
 #include "GLFW/glfw3.h"
 
@@ -1329,6 +1330,7 @@ void GSNativeBackend::syncVramToGpu()
     // The blocks transfers changed since the last draw: 64 words each, 16 to a row of the texture, sent as runs.
     if (!m_anyDirty || !m_vram)
         return;
+    ps2x::prof::Scope profScope(ps2x::prof::GsUpload);
     m_anyDirty = false;
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, m_vramTexture);
@@ -1344,6 +1346,7 @@ void GSNativeBackend::syncVramToGpu()
         uint32_t end = block;
         while (end < blocks && m_dirtyBlocks[end] && (end == block || end % 16u != 0u))
             m_dirtyBlocks[end++] = 0u;
+        ps2x::prof::count(ps2x::prof::UploadKiB, (end - block) / 4u);
         glTexSubImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>((block % 16u) * 64u), static_cast<GLint>(block / 16u),
                         static_cast<GLsizei>((end - block) * 64u), 1, GL_RED_INTEGER, GL_UNSIGNED_INT,
                         m_vram + static_cast<size_t>(block) * 256u);
@@ -1361,6 +1364,7 @@ void GSNativeBackend::pullGpuPages(uint32_t firstPage, uint32_t endPage)
 {
     if (!m_anyGpuNewer || !m_vram || !m_vramFramebuffer || !ensureContext())
         return;
+    ps2x::prof::Scope profScope(ps2x::prof::GsRead);
     const GlStateRestore restore;
     syncVramToGpu();
     glBindFramebuffer(GL_READ_FRAMEBUFFER, m_vramFramebuffer);
@@ -1377,6 +1381,8 @@ void GSNativeBackend::pullGpuPages(uint32_t firstPage, uint32_t endPage)
             continue;
         }
         m_gpuNewer[page] = 0u;
+        ps2x::prof::count(ps2x::prof::Readbacks);
+        ps2x::prof::count(ps2x::prof::ReadbackKiB, 8u);
         glReadPixels(0, static_cast<GLint>(page * 2u), 1024, 2, GL_RED_INTEGER, GL_UNSIGNED_INT,
                      m_vram + static_cast<size_t>(page) * 8192u);
     }
@@ -1538,6 +1544,7 @@ void GSNativeBackend::resolveTargetPages(RenderTarget &target, uint32_t firstPag
     // Through the CPU, page by page: the pixels read back and written in the target's format (CT24 keeps GS
     // memory's top byte, where a game keeps T8H / T4HL / T4HH textures), then into the texture cache for the CPU
     // decoding path as a host-to-local transfer of that rectangle.
+    ps2x::prof::Scope profScope(ps2x::prof::GsRead);
     pullGpuPages(firstPage, endPage);
     const uint32_t fbw = std::max<uint32_t>(target.fbw, 1u), pageRows = pageRowsOf(target.psm), bp = target.fbp * 32u;
     const bool sixteen = target.psm == 0x02u || target.psm == 0x0Au;
@@ -1547,6 +1554,8 @@ void GSNativeBackend::resolveTargetPages(RenderTarget &target, uint32_t firstPag
         const uint32_t x0 = (page - target.fbp) % fbw * 64u, y0 = (page - target.fbp) / fbw * pageRows;
         glBindFramebuffer(GL_READ_FRAMEBUFFER, readFramebufferAt1x(target, x0, y0, 64u, pageRows));
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        ps2x::prof::count(ps2x::prof::Readbacks);
+        ps2x::prof::count(ps2x::prof::ReadbackKiB, pageRows / 4u);
         glReadPixels(static_cast<GLint>(x0), static_cast<GLint>(y0), 64, static_cast<GLsizei>(pageRows), GL_RGBA,
                      GL_UNSIGNED_BYTE, pixels.data());
         std::vector<uint8_t> upload(64u * pageRows * (sixteen ? 2u : 4u));
@@ -2013,6 +2022,8 @@ bool GSNativeBackend::bindTexture(const GSDrawState &state, const RenderTarget &
         if (uploaded.version != version || uploaded.width != decoded->width || uploaded.height != decoded->height)
         {
             glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            ps2x::prof::count(ps2x::prof::TextureDecodes);
+            ps2x::prof::count(ps2x::prof::UploadKiB, decoded->width * decoded->height / 256u);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, decoded->width, decoded->height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
                          decoded->rgba.data());
             uploaded.version = version;
@@ -2126,6 +2137,8 @@ void GSNativeBackend::flushBatch()
 {
     if (m_batch.empty())
         return;
+    ps2x::prof::Scope profScope(ps2x::prof::GsDraw);
+    ps2x::prof::count(ps2x::prof::Batches);
     static const bool s_stats = std::getenv("PS2X_GS_NATIVE_STATS") != nullptr;
     static uint64_t s_flushes = 0, s_noContext = 0, s_verts = 0;
     if (!ensureContext(true))
