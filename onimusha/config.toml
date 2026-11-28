@@ -1034,6 +1034,15 @@ entry_points = [
 # Legacy compatibility field. The analyzer no longer auto-populates skip entries.
 skip = []
 
+# The analyzer cut these functions at a backward branch; the rest of their body was never translated.
+# 0x1F1290 left the game hanging at the area transition at the end of the Stage 1 street.
+function_ends = [
+  "0x00101470:0x00101CB4",
+  "0x00122700:0x001238C8",
+  "0x001F1290:0x001F1CAC",
+  "0x00225358:0x002254AC",
+]
+
 # Detected MMIO accesses
 [mmio]
 "0x4035b8" = "0x1000f000"

@@ -188,6 +188,8 @@ namespace ps2recomp
         std::unordered_map<uint32_t, std::string> patches;
         std::vector<std::string> stubImplementations;
         std::vector<std::string> entryPointHints;
+        // Function end addresses that replace the analyzer's guess, keyed by start address.
+        std::unordered_map<uint32_t, uint32_t> functionEndOverrides;
         std::unordered_map<uint32_t, uint32_t> mmioByInstructionAddress;
         std::vector<JumpTable> jumpTables;
     };

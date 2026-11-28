@@ -915,6 +915,7 @@ namespace ps2recomp
             }
 
             m_functions = m_elfParser->extractFunctions();
+            applyFunctionEndOverrides();
             m_symbols = m_elfParser->extractSymbols();
             m_sections = m_elfParser->getSections();
             m_relocations = m_elfParser->getRelocations();
@@ -2265,6 +2266,36 @@ namespace ps2recomp
         if (bindingIt != m_stubHandlerBindingsByStart.end() && !bindingIt->second.empty())
             handlerName = bindingIt->second;
         return resolveStubTarget(handlerName) != StubTarget::Unknown;
+    }
+
+    // The analyzer ends a function at a backward unconditional branch even when earlier branches jump
+    // past it, which leaves the rest of the body untranslated. Config entries restore the real end and
+    // drop the fragments that the analyzer had split off inside that range.
+    void PS2Recompiler::applyFunctionEndOverrides()
+    {
+        for (const auto &[start, end] : m_config.functionEndOverrides)
+        {
+            auto it = std::find_if(m_functions.begin(), m_functions.end(),
+                                   [start = start](const Function &f)
+                                   { return f.start == start; });
+            if (it == m_functions.end())
+            {
+                std::ostringstream msg;
+                msg << "function_ends: no function starts at 0x" << std::hex << start;
+                m_reporter.warning("config", msg.str());
+                continue;
+            }
+
+            std::ostringstream msg;
+            msg << "function_ends: 0x" << std::hex << start << " end 0x" << it->end << " -> 0x" << end;
+            m_reporter.info("config", msg.str());
+            it->end = end;
+
+            m_functions.erase(std::remove_if(m_functions.begin(), m_functions.end(),
+                                             [start = start, end = end](const Function &f)
+                                             { return f.start > start && f.start < end; }),
+                              m_functions.end());
+        }
     }
 
     void PS2Recompiler::collectCorrectnessCriticalFunctionStarts()

@@ -104,6 +104,26 @@ namespace ps2recomp
                 config.skipFunctions = toml::find<std::vector<std::string>>(data, "skip");
             }
 
+            // function_ends = ["0xSTART:0xEND", ...] fixes functions that the analyzer cut short.
+            if (general.contains("function_ends") && general.at("function_ends").is_array())
+            {
+                for (const auto &entry : toml::find<std::vector<std::string>>(general, "function_ends"))
+                {
+                    const size_t colon = entry.find(':');
+                    if (colon == std::string::npos)
+                    {
+                        throw std::runtime_error("function_ends entry without ':' : " + entry);
+                    }
+                    const uint32_t start = static_cast<uint32_t>(std::stoul(entry.substr(0, colon), nullptr, 0));
+                    const uint32_t end = static_cast<uint32_t>(std::stoul(entry.substr(colon + 1), nullptr, 0));
+                    if (end <= start)
+                    {
+                        throw std::runtime_error("function_ends entry with end <= start: " + entry);
+                    }
+                    config.functionEndOverrides[start] = end;
+                }
+            }
+
             if (data.contains("patches") && data.at("patches").is_table())
             {
                 const auto &patches = toml::find(data, "patches");
