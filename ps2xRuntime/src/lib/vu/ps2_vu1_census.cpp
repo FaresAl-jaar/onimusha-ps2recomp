@@ -363,10 +363,14 @@ namespace vu1census
                     im.lo = im.hi = 0;
                 c.images.push_back(std::move(im));
                 c.current = static_cast<int>(c.images.size() - 1);
+                // Written as soon as a new image shows up and then every 4096 activations, so a run that
+                // is closed without a normal exit (Alt+F4) still leaves the census behind.
+                dump();
             }
         }
         Image &im = c.images[c.current];
-        ++im.activations;
+        if ((++im.activations & 4095u) == 0u)
+            dump();
         ++im.entries[startPc].count;
         c.currentEntry = startPc;
         c.index = 0;
@@ -508,5 +512,12 @@ namespace vu1census
             c.lastDump = now;
             dump();
         }
+    }
+
+    void onLifted()
+    {
+        Census &c = g_census;
+        c.current = -1;
+        c.lastCode = nullptr;
     }
 }

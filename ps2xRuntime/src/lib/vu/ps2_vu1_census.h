@@ -28,6 +28,9 @@ namespace vu1census
     void onJump(uint32_t pc, uint32_t target);
 
     void onRunEnd(uint64_t cycles);
+
+    // A lifted image runs instead of the interpreter: nothing is recorded until the next onExecute.
+    void onLifted();
 }
 
 #endif

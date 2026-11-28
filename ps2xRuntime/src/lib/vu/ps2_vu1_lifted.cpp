@@ -1,3 +1,4 @@
+#include "ps2_vu1_census.h"
 #include "ps2_vu1_lifted.h"
 
 #include "runtime/gs/gs_frontend.h"
@@ -437,6 +438,9 @@ bool VU1Lifted::tryExecute(VU1Interpreter &vu, uint8_t *vuCode, uint32_t codeSiz
         return false;
     if (!g_current->isBlockStart(vu.m_state.pc) || vu.m_state.dBitEnabled || vu.m_state.tBitEnabled)
         return false;
+    // A census run records only images without lifted code, including the interpreter handoffs below.
+    if (vu1census::enabled())
+        vu1census::onLifted();
     if (s.verify)
         verifyExecute(vu, vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
     else

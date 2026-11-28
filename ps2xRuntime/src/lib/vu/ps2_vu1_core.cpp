@@ -1860,10 +1860,15 @@ void VU1Interpreter::execute(uint8_t *vuCode, uint32_t codeSize,
     m_state.vf[0][1] = 0.0f;
     m_state.vf[0][2] = 0.0f;
     m_state.vf[0][3] = 1.0f;
+    // With PS2X_VU1_CENSUS the lifted images keep running and only the others are recorded.
+    if (m_unit == Unit::VU1 && VU1Lifted::tryExecute(*this, vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles))
+    {
+        if (vu1census::enabled())
+            vu1census::onLifted();
+        return;
+    }
     if (m_unit == Unit::VU1 && vu1census::enabled())
         vu1census::onExecute(vuCode, codeSize, memory ? memory->getVU1CodeGeneration() : 0u, m_state.pc);
-    else if (m_unit == Unit::VU1 && VU1Lifted::tryExecute(*this, vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles))
-        return;
     run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
 }
 
@@ -1913,9 +1918,12 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
         }
     }
     // MSCNT continues where the last E bit stopped: a lifted image takes it from there too.
-    if (m_unit == Unit::VU1 && !vu1census::enabled() &&
-        VU1Lifted::tryExecute(*this, vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles))
+    if (m_unit == Unit::VU1 && VU1Lifted::tryExecute(*this, vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles))
+    {
+        if (vu1census::enabled())
+            vu1census::onLifted();
         return;
+    }
     run(vuCode, codeSize, vuData, dataSize, gs, memory, maxCycles);
 }
 
