@@ -55,6 +55,7 @@ jobs:
           Get-ChildItem build/ps2xRuntime -Filter *.dll | Copy-Item -Destination $out
           Copy-Item build-launcher/OnimushaPC/OnimushaLauncher.exe $out
           Copy-Item onimusha/README.txt $out
+          Copy-Item onimusha/VU1_Census.bat $out
           Compress-Archive -Path "$out/*" -DestinationPath OnimushaPC-windows-x64.zip -Force
 
       - uses: actions/upload-artifact@v4
