@@ -661,7 +661,21 @@ namespace ps2x::native
         }
         const uint32_t bpp = bitsPerPixel(dpsm);
         const size_t pixels = std::min<size_t>(static_cast<size_t>(w) * h, bytes * 8u / bpp);
-        for (size_t i = 0; i < pixels; ++i)
+        // Row by row through GSMem::WriteRow (same result as the per-pixel writes below, much faster). Rows of a
+        // 4-bit upload start on a byte only when the width is even; other cases take the per-pixel loop.
+        size_t done = 0;
+        // Depth formats are not kept here (write() ignores them), so they stay on the per-pixel loop.
+        if ((dpsm & 0x30u) != 0x30u && (bpp != 4u || (w & 1u) == 0u))
+        {
+            while (done + w <= pixels)
+            {
+                const uint32_t row = static_cast<uint32_t>(done / w);
+                if (!GSMem::WriteRow(dpsm, m_memory.data(), dbp, dbw, dx, dy + row, data + done * bpp / 8u, w))
+                    break;
+                done += w;
+            }
+        }
+        for (size_t i = done; i < pixels; ++i)
         {
             const uint32_t x = dx + static_cast<uint32_t>(i % w);
             const uint32_t y = dy + static_cast<uint32_t>(i / w);

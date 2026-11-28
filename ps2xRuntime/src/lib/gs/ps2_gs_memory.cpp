@@ -303,6 +303,56 @@ namespace GSMem
         }
     }
 
+    namespace
+    {
+        template <PixelStorageMode P, typename Table, typename Load>
+        inline void writeRowWith(const Table& table, u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 count, Load load)
+        {
+            for (u32 i = 0; i < count; ++i)
+                PixelStorageTraits<P>::Write(table, data, bp, bw, x + i, y, load(i));
+        }
+
+        inline u32 load32(const u8* p)
+        {
+            u32 v;
+            std::memcpy(&v, p, 4);
+            return v;
+        }
+
+        inline u16 load16(const u8* p)
+        {
+            u16 v;
+            std::memcpy(&v, p, 2);
+            return v;
+        }
+    }
+
+    bool WriteRow(u32 psm, u8* data, u32 bp, u32 bw, u32 x, u32 y, const u8* src, u32 count)
+    {
+        auto c32 = [src](u32 i) { return load32(src + i * 4u); };
+        auto c24 = [src](u32 i) { const u8* p = src + i * 3u; return static_cast<u32>(p[0]) | (static_cast<u32>(p[1]) << 8u) | (static_cast<u32>(p[2]) << 16u); };
+        auto c16 = [src](u32 i) { return load16(src + i * 2u); };
+        auto p8 = [src](u32 i) { return src[i]; };
+        auto p4 = [src](u32 i) { return static_cast<u8>((src[i >> 1u] >> ((i & 1u) * 4u)) & 0x0Fu); };
+        switch (psm)
+        {
+        case 0x00: writeRowWith<C32>(PageTableC32, data, bp, bw, x, y, count, c32); return true;
+        case 0x30: writeRowWith<Z32>(PageTableZ32, data, bp, bw, x, y, count, c32); return true;
+        case 0x01: writeRowWith<C24>(PageTableC32, data, bp, bw, x, y, count, c24); return true;
+        case 0x31: writeRowWith<Z24>(PageTableZ32, data, bp, bw, x, y, count, c24); return true;
+        case 0x02: writeRowWith<C16>(PageTableC16, data, bp, bw, x, y, count, c16); return true;
+        case 0x0A: writeRowWith<C16S>(PageTableC16S, data, bp, bw, x, y, count, c16); return true;
+        case 0x32: writeRowWith<Z16>(PageTableZ16, data, bp, bw, x, y, count, c16); return true;
+        case 0x3A: writeRowWith<Z16S>(PageTableZ16S, data, bp, bw, x, y, count, c16); return true;
+        case 0x13: writeRowWith<P8>(PageTableP8, data, bp, bw, x, y, count, p8); return true;
+        case 0x1B: writeRowWith<P8H>(PageTableC32, data, bp, bw, x, y, count, p8); return true;
+        case 0x14: writeRowWith<P4>(PageTableP4, data, bp, bw, x, y, count, p4); return true;
+        case 0x24: writeRowWith<P4HL>(PageTableC32, data, bp, bw, x, y, count, p4); return true;
+        case 0x2C: writeRowWith<P4HH>(PageTableC32, data, bp, bw, x, y, count, p4); return true;
+        default: return false;
+        }
+    }
+
     void WriteCT32(u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 value)
     {
         PixelStorageTraits<C32>::Write(PageTableC32, data, bp, bw, x, y, value);

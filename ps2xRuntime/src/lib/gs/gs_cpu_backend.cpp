@@ -1608,8 +1608,31 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
         m_transferState.y = m_transfer.trxpos.dsay + (m_transferState.copiedPixels / rrw);
     };
 
+    // Whole rows at a time where the format allows: no per-pixel function pointer and no division per pixel.
+    // The movie and menu uploads spent most of their time here.
+    const uint32_t bitsPerPixel = static_cast<uint32_t>(GSMem::BitsPerPixel(static_cast<GSMem::PixelStorageMode>(dpsm)));
+    const bool rowPath = bitsPerPixel == 32u || bitsPerPixel == 24u || bitsPerPixel == 16u || bitsPerPixel == 8u ||
+                         bitsPerPixel == 4u;
     while (offset < sizeBytes && m_transferState.direction == 0u)
     {
+        if (rowPath)
+        {
+            const uint32_t copied = m_transferState.copiedPixels;
+            const uint32_t rowLeft = rrw - copied % rrw;
+            const uint32_t leftInTransfer = m_transferState.totalPixels - copied;
+            uint32_t count = std::min(rowLeft, leftInTransfer);
+            const uint32_t availableBits = (sizeBytes - offset) * 8u;
+            count = std::min(count, availableBits / bitsPerPixel);
+            if (bitsPerPixel == 4u)
+                count &= ~1u;
+            if (count != 0u && (bitsPerPixel != 4u || (copied & 1u) == 0u) &&
+                GSMem::WriteRow(dpsm, m_vram, dbp, dbw, m_transferState.x, m_transferState.y, data + offset, count))
+            {
+                offset += count * bitsPerPixel / 8u;
+                advancePixel(count);
+                continue;
+            }
+        }
         switch (dpsm)
         {
         case GS_PSM_CT32:

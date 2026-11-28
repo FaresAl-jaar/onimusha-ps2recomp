@@ -17,6 +17,7 @@ namespace ps2x::prof
         GsDraw,   // GPU renderer: building and submitting draw batches
         GsRead,   // GPU renderer: reading GS memory back from the GPU
         GsUpload, // GPU renderer: uploading changed GS memory and decoded textures
+        GsXfer,   // image transfers into GS memory on the CPU side (BeginTransfer, UploadImage)
         Count
     };
 
@@ -30,6 +31,8 @@ namespace ps2x::prof
         UploadKiB,
         Batches,
         TextureDecodes,
+        Transfers,
+        ImageChunks,
         CounterCount
     };
 

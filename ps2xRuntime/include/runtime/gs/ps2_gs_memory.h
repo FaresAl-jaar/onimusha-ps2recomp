@@ -563,6 +563,11 @@ namespace GSMem
 
 	void WriteNull(u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 value);
 
+	// Writes `count` pixels of one row (x..x+count-1 at y) from packed transfer data, as the matching WriteXX
+	// calls would. Returns false for a format it does not handle. P4 formats need an even x offset into the data
+	// and an even count (two pixels per byte, low nibble first).
+	bool WriteRow(u32 psm, u8* data, u32 bp, u32 bw, u32 x, u32 y, const u8* src, u32 count);
+
 	u32 ReadCT32(u8* data, u32 bp, u32 bw, u32 x, u32 y);
 	u32 ReadZ32(u8* data, u32 bp, u32 bw, u32 x, u32 y);
 

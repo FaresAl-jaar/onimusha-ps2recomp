@@ -559,7 +559,7 @@ namespace
                              static_cast<unsigned long long>(s_audioDry.exchange(0)), ps2x::iop::spu2BufferedFrames());
                 {
                     static uint64_t s_lastNs[ps2x::prof::Count] = {};
-                    static const char *const kNames[ps2x::prof::Count] = {"game code", "VU1", "GS", "IOP", "present", "VIF", "GS draw", "GS read", "GS upload"};
+                    static const char *const kNames[ps2x::prof::Count] = {"game code", "VU1", "GS", "IOP", "present", "VIF", "GS draw", "GS read", "GS upload", "GS transfer"};
                     std::fprintf(stderr, "[speed] game thread ms per second:");
                     for (int i = 0; i < ps2x::prof::Count; ++i)
                     {
@@ -570,7 +570,7 @@ namespace
                     std::fprintf(stderr, "\n");
                     static uint64_t s_lastCount[ps2x::prof::CounterCount] = {};
                     static const char *const kCounterNames[ps2x::prof::CounterCount] = {
-                        "readbacks", "readback KiB", "upload KiB", "batches", "texture decodes"};
+                        "readbacks", "readback KiB", "upload KiB", "batches", "texture decodes", "transfers", "image chunks"};
                     std::fprintf(stderr, "[speed] GS per second:");
                     for (int i = 0; i < ps2x::prof::CounterCount; ++i)
                     {

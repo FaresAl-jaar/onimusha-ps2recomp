@@ -2638,6 +2638,8 @@ void GSNativeBackend::markDirty(uint32_t psm, uint32_t bp, uint32_t bw, uint32_t
 
 void GSNativeBackend::BeginTransfer(const GSTransferCommand &command)
 {
+    ps2x::prof::Scope profScope(ps2x::prof::GsXfer);
+    ps2x::prof::count(ps2x::prof::Transfers);
     flushBatch();
     // A transfer that reads GS memory on the CPU side (local to host, local to local) needs the newest pixels
     // there: only the source's pages (a game reading back a few pixels every frame, VP2's light level, should not
@@ -2748,11 +2750,28 @@ bool GSNativeBackend::copyBetweenTargets(const GSTransferCommand &command)
 
 void GSNativeBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
 {
+    ps2x::prof::Scope profScope(ps2x::prof::GsXfer);
+    ps2x::prof::count(ps2x::prof::ImageChunks);
+    // The transfer's data may come in pieces, with draws (and a send of the dirty blocks) in between. Only the
+    // rows this piece wrote are marked: marking the whole rectangle for every piece cost the menu, whose movie
+    // frames arrive in many pieces, most of a frame's time.
+    const GSTransferSnapshot before = m_memory->GetTransferSnapshot();
     m_memory->UploadImage(data, sizeBytes);
-    // The transfer's data may come in pieces, with draws (and a send of the dirty blocks) in between.
-    if (m_transferDirect == 0u)
+    if (m_transferDirect != 0u)
+        return;
+    const uint32_t rrw = std::max<uint32_t>(m_transfer.trxreg.rrw, 1u);
+    if (before.direction == 0u)
+    {
+        const uint32_t after = m_memory->GetTransferSnapshot().copiedPixels;
+        if (after <= before.copiedPixels)
+            return;
+        const uint32_t firstRow = before.copiedPixels / rrw, lastRow = (after - 1u) / rrw;
         markDirty(m_transfer.bitbltbuf.dpsm, m_transfer.bitbltbuf.dbp, m_transfer.bitbltbuf.dbw, m_transfer.trxpos.dsax,
-                  m_transfer.trxpos.dsay, m_transfer.trxreg.rrw, m_transfer.trxreg.rrh);
+                  m_transfer.trxpos.dsay + firstRow, rrw, lastRow - firstRow + 1u);
+        return;
+    }
+    markDirty(m_transfer.bitbltbuf.dpsm, m_transfer.bitbltbuf.dbp, m_transfer.bitbltbuf.dbw, m_transfer.trxpos.dsax,
+              m_transfer.trxpos.dsay, m_transfer.trxreg.rrw, m_transfer.trxreg.rrh);
 }
 
 void GSNativeBackend::Flush()
