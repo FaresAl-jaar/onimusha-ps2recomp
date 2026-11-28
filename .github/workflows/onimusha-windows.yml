@@ -2,14 +2,14 @@ name: Onimusha Windows build
 
 on:
   push:
-    branches: [main]
+    branches: [build/stage1-speed-6bba51e]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: onimusha-windows
+  group: onimusha-windows-stage1-speed
   cancel-in-progress: true
 
 jobs:
@@ -61,14 +61,3 @@ jobs:
         with:
           name: OnimushaPC-windows-x64
           path: OnimushaPC-windows-x64.zip
-
-      - name: Publish download (release "latest")
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: Onimusha PC (latest build)
-          prerelease: true
-          files: OnimushaPC-windows-x64.zip
-          body: |
-            Automatic build of main (${{ github.sha }}).
-            Unzip, start OnimushaLauncher.exe, choose your Disc 1 ISO, press PLAY.
