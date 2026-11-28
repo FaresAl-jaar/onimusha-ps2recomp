@@ -22,6 +22,8 @@ extern std::atomic<uint64_t> g_ps2xGfxCounters[8];
 // Set by the runtime: hands the VIF1 thread's GS work over before any other GS access, so the GS keeps
 // seeing everything in the original order.
 void (*g_ps2xGsAccessHook)() = nullptr;
+// The same for presenting a frame (separate so the wait can be told apart).
+bool (*g_ps2xGsPresentHook)() = nullptr;
 // Set by the runtime: serves the GS interrupt for a SIGNAL right away.
 void (*g_ps2xGsSignalHook)() = nullptr;
 
@@ -545,8 +547,8 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
 
 void GS::latchHostPresentationFrame()
 {
-    if (g_ps2xGsAccessHook)
-        g_ps2xGsAccessHook();
+    if (g_ps2xGsPresentHook)
+        (void)g_ps2xGsPresentHook();
     // A GPU renderer presents on the game thread (presentOnDrawThread); the window only reads what it stored.
     {
         std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
@@ -558,8 +560,9 @@ void GS::latchHostPresentationFrame()
 
 void GS::presentOnDrawThread()
 {
-    if (g_ps2xGsAccessHook)
-        g_ps2xGsAccessHook();
+    // While the VIF1 thread still draws the next frame, the last frame stays on screen instead of waiting.
+    if (g_ps2xGsPresentHook && !g_ps2xGsPresentHook())
+        return;
     ps2x::prof::Scope profScope(ps2x::prof::Present);
     {
         std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);

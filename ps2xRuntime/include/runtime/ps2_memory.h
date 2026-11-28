@@ -427,7 +427,23 @@ public:
     // at VBlank (syncVif1Thread), so the GS sees exactly the order it saw before.
     void startVif1Thread();
     void stopVif1Thread();
-    void syncVif1Thread();
+    // reason: where the game thread needed the VIF1 thread's GS work (for the [speed] statistics).
+    enum Vif1SyncReason : int
+    {
+        Vif1SyncGsAccess = 0,
+        Vif1SyncGif,
+        Vif1SyncTransfers,
+        Vif1SyncGsPriv,
+        Vif1SyncVifRegs,
+        Vif1SyncVu1Mem,
+        Vif1SyncPresent,
+        Vif1SyncReasonCount
+    };
+    void syncVif1Thread(int reason = Vif1SyncGsAccess);
+    // Hands over the GS work the VIF1 thread has finished, without waiting. True when nothing is left.
+    bool drainVif1Thread();
+    static std::atomic<uint64_t> s_vif1Waits[Vif1SyncReasonCount];
+    static std::atomic<uint64_t> s_vif1WaitNs[Vif1SyncReasonCount];
     bool vif1ThreadOn() const { return m_vif1ThreadOn; }
     static bool onVif1Thread();
     // EE state the VU1 callbacks read, as it was when the transfer started (the thread cannot read the EE).
@@ -544,7 +560,7 @@ public:
     void replayVif1Result(const Vif1Result &result);
     bool vif1Capture(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately, bool directHl);
     bool vif1CaptureMaskPath3(bool masked);
-    void syncVif1IfTouched(uint32_t address);
+    void syncVif1IfTouched(uint32_t address, bool write = false, uint64_t value = 0);
     std::thread m_vif1Thread;
     std::mutex m_vif1Mutex;
     std::condition_variable m_vif1JobCv;

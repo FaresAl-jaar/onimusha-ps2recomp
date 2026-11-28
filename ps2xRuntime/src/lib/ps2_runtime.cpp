@@ -523,6 +523,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
 
 extern void (*g_ps2xGsSignalHook)();
 extern void (*g_ps2xGsAccessHook)();
+extern bool (*g_ps2xGsPresentHook)();
 void ps2xRefreshActiveDmaChains();
 namespace
 {
@@ -587,6 +588,23 @@ namespace
                         if (total != 0u)
                             std::fprintf(stderr, "[speed] VIF1 thread ms per second: busy %.0f (VU1 %.0f VIF %.0f)\n",
                                          static_cast<double>(busy) / 1.0e6 / seconds, ms[ps2x::prof::Vu1], ms[ps2x::prof::Vif]);
+                        static uint64_t s_lastWaits[PS2Memory::Vif1SyncReasonCount] = {}, s_lastWaitNs[PS2Memory::Vif1SyncReasonCount] = {};
+                        static const char *const kWaitNames[PS2Memory::Vif1SyncReasonCount] = {
+                            "GS access", "GIF", "other DMA", "GS registers", "VIF registers", "VU1 memory", "present"};
+                        if (total != 0u)
+                        {
+                            std::fprintf(stderr, "[speed] game thread waits for the VIF1 thread (per second, count/ms):");
+                            for (int i = 0; i < PS2Memory::Vif1SyncReasonCount; ++i)
+                            {
+                                const uint64_t n = PS2Memory::s_vif1Waits[i].load(std::memory_order_relaxed);
+                                const uint64_t ns = PS2Memory::s_vif1WaitNs[i].load(std::memory_order_relaxed);
+                                std::fprintf(stderr, " %s %.0f/%.0f", kWaitNames[i], static_cast<double>(n - s_lastWaits[i]) / seconds,
+                                             static_cast<double>(ns - s_lastWaitNs[i]) / 1.0e6 / seconds);
+                                s_lastWaits[i] = n;
+                                s_lastWaitNs[i] = ns;
+                            }
+                            std::fprintf(stderr, "\n");
+                        }
                     }
                     static uint64_t s_lastCount[ps2x::prof::CounterCount] = {};
                     static const char *const kCounterNames[ps2x::prof::CounterCount] = {
@@ -760,6 +778,7 @@ PS2Runtime::~PS2Runtime()
         s_signalRuntime = nullptr;
         g_ps2xGsSignalHook = nullptr;
         g_ps2xGsAccessHook = nullptr;
+        g_ps2xGsPresentHook = nullptr;
     }
     try
     {
@@ -955,7 +974,23 @@ bool PS2Runtime::syncCoreSubsystems()
                                 {
                                     R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
                                     return (cpuContext ? cpuContext : &m_cpuContext)->vu0_fbrst; });
-    g_ps2xGsAccessHook = [] { if (s_signalRuntime) s_signalRuntime->memory().syncVif1Thread(); };
+    g_ps2xGsAccessHook = [] { if (s_signalRuntime) s_signalRuntime->memory().syncVif1Thread(PS2Memory::Vif1SyncGsAccess); };
+    // Present without waiting for the VIF1 thread; after two VBlanks in a row without a finished frame, wait
+    // once so the picture can never stand still.
+    g_ps2xGsPresentHook = []() -> bool
+    {
+        static int s_skipped = 0;
+        if (!s_signalRuntime || s_signalRuntime->memory().drainVif1Thread())
+        {
+            s_skipped = 0;
+            return true;
+        }
+        if (++s_skipped < 2)
+            return false;
+        s_signalRuntime->memory().syncVif1Thread(PS2Memory::Vif1SyncPresent);
+        s_skipped = 0;
+        return true;
+    };
     resetIop();
     m_vu0.reset();
     m_vu1.reset();
