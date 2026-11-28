@@ -1,0 +1,135 @@
+{
+  "programs": [
+    {
+      "crc": "8bfc70f26dce4577",
+      "image": "vu1_8bfc70f26dce4577.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 33411,
+      "instructions": 163347420,
+      "xgkicks": 455343,
+      "entries": [
+        {"pc": 0, "count": 33411}
+      ]
+    },
+    {
+      "crc": "9612a8c797525352",
+      "image": "vu1_9612a8c797525352.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 345,
+      "instructions": 418485,
+      "xgkicks": 690,
+      "entries": [
+        {"pc": 0, "count": 345}
+      ]
+    },
+    {
+      "crc": "2e40088df3d4b361",
+      "image": "vu1_2e40088df3d4b361.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 60174,
+      "instructions": 221448362,
+      "xgkicks": 579650,
+      "entries": [
+        {"pc": 0, "count": 60174}
+      ]
+    },
+    {
+      "crc": "1614aa03babcfc4a",
+      "image": "vu1_1614aa03babcfc4a.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 1078,
+      "instructions": 5331212,
+      "xgkicks": 14696,
+      "entries": [
+        {"pc": 0, "count": 1078}
+      ]
+    },
+    {
+      "crc": "051b3e9fe6d27684",
+      "image": "vu1_051b3e9fe6d27684.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 11,
+      "instructions": 13343,
+      "xgkicks": 22,
+      "entries": [
+        {"pc": 0, "count": 11}
+      ]
+    },
+    {
+      "crc": "078dadb2796fec4b",
+      "image": "vu1_078dadb2796fec4b.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 1893,
+      "instructions": 6790072,
+      "xgkicks": 17521,
+      "entries": [
+        {"pc": 0, "count": 1893}
+      ]
+    },
+    {
+      "crc": "61e941031d28cd76",
+      "image": "vu1_61e941031d28cd76.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 6212,
+      "instructions": 35424193,
+      "xgkicks": 46589,
+      "entries": [
+        {"pc": 0, "count": 6212}
+      ]
+    },
+    {
+      "crc": "18390bc70967c313",
+      "image": "vu1_18390bc70967c313.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 882,
+      "instructions": 4293674,
+      "xgkicks": 12024,
+      "entries": [
+        {"pc": 0, "count": 882}
+      ]
+    },
+    {
+      "crc": "8bc3af55050bb0f8",
+      "image": "vu1_8bc3af55050bb0f8.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 9,
+      "instructions": 10917,
+      "xgkicks": 18,
+      "entries": [
+        {"pc": 0, "count": 9}
+      ]
+    },
+    {
+      "crc": "fb0beb37caf068e7",
+      "image": "vu1_fb0beb37caf068e7.bin",
+      "bytes": 16384,
+      "code_lo": 0,
+      "code_hi": 4760,
+      "activations": 1557,
+      "instructions": 5631626,
+      "xgkicks": 14949,
+      "entries": [
+        {"pc": 0, "count": 1557}
+      ]
+    }
+  ],
+  "dropped": 0
+}
